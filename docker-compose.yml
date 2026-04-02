@@ -1,0 +1,9 @@
+services:
+  database:
+    image: 'postgres:18'
+    ports:
+      - 15432:5432
+    env_file:
+      - .env
+    volumes:
+      - ./.docker/postgres:/var/lib/postgresql/
