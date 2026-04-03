@@ -1,0 +1,111 @@
+use core::fmt;
+
+use crate::domain::errors::DomainError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserId(String);
+
+impl UserId {
+    pub fn validate(input: &str) -> Result<&str, DomainError> {
+        let trimmed = input.trim();
+
+        if trimmed.is_empty() {
+            Err(DomainError::InvalidUserId)
+        } else {
+            Ok(trimmed)
+        }
+    }
+
+    pub fn new(input: &str) -> Result<Self, DomainError> {
+        Ok(Self(Self::validate(input)?.to_owned()))
+    }
+
+    pub fn from_string(input: String) -> Result<Self, DomainError> {
+        let trimmed = input.trim();
+
+        if trimmed.len() == input.len() {
+            Ok(Self(input))
+        } else {
+            Ok(Self(trimmed.to_owned()))
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UserId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl TryFrom<&str> for UserId {
+    type Error = DomainError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        UserId::new(value)
+    }
+}
+
+impl TryFrom<String> for UserId {
+    type Error = DomainError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        UserId::from_string(value)
+    }
+}
+
+impl AsRef<str> for UserId {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn creates_valid_user_id() {
+        let acc = UserId::new(" 12345 ").unwrap();
+        assert_eq!(acc.as_str(), "12345");
+    }
+
+    #[test]
+    fn trims_input() {
+        let acc = UserId::new("  abc  ").unwrap();
+        assert_eq!(acc.as_str(), "abc");
+    }
+
+    #[test]
+    fn rejects_empty_string() {
+        let err = UserId::new("").unwrap_err();
+        assert_eq!(err, DomainError::InvalidUserId);
+    }
+
+    #[test]
+    fn rejects_whitespace_only() {
+        let err = UserId::new("      ").unwrap_err();
+        assert_eq!(err, DomainError::InvalidUserId);
+    }
+
+    #[test]
+    fn try_from_str_works() {
+        let acc = UserId::try_from("123").unwrap();
+        assert_eq!(acc.as_str(), "123");
+    }
+
+    #[test]
+    fn try_from_string_works() {
+        let acc = UserId::try_from(String::from("123")).unwrap();
+        assert_eq!(acc.as_str(), "123");
+    }
+
+    #[test]
+    fn display_outputs_inner_value() {
+        let acc = UserId::new("123").unwrap();
+        assert_eq!(format!("{}", acc), "123");
+    }
+}
