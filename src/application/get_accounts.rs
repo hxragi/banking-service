@@ -39,7 +39,10 @@ mod tests {
     use async_trait::async_trait;
     use std::sync::{Arc, Mutex};
 
-    use crate::application::ports::{AccountRepository, AccountRepositoryError};
+    use crate::application::ports::{
+        AccountRepository, AccountRepositoryError, TransactionRepositoryError,
+    };
+    use crate::domain::transaction::Transaction;
     use crate::domain::{
         account::Account, account_number::AccountNumber, balance::Balance, owner::Owner,
         user_id::UserId,
@@ -79,6 +82,13 @@ mod tests {
         ) -> Result<Vec<Account>, AccountRepositoryError> {
             self.find_by_owner_result.clone()?;
             Ok(self.accounts.lock().unwrap().clone())
+        }
+
+        async fn find_by_account_id(
+            &self,
+            _account_id: Uuid,
+        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
+            unimplemented!("find_by_account_id is not used in this test")
         }
     }
 

@@ -80,8 +80,9 @@ mod tests {
 
     use crate::application::ports::{
         AccountNumberGenerator, AccountNumberGeneratorError, AccountRepository,
-        AccountRepositoryError,
+        AccountRepositoryError, TransactionRepositoryError,
     };
+    use crate::domain::transaction::Transaction;
     use crate::domain::{
         account::Account, account_number::AccountNumber, owner::Owner, tier::Tier, user_id::UserId,
     };
@@ -122,6 +123,13 @@ mod tests {
             _owner: &Owner,
         ) -> Result<Vec<Account>, AccountRepositoryError> {
             unimplemented!("find_by_owner is not used in this test")
+        }
+
+        async fn find_by_account_id(
+            &self,
+            _account_id: Uuid,
+        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
+            unimplemented!("find_by_account_id is not used in this test")
         }
     }
 

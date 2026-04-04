@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use thiserror::Error;
+use uuid::Uuid;
 
 use crate::domain::account::Account;
 use crate::domain::account_number::AccountNumber;
@@ -34,6 +35,10 @@ pub trait AccountRepository {
     ) -> Result<Option<Account>, AccountRepositoryError>;
     async fn update(&self, account: &Account) -> Result<(), AccountRepositoryError>;
     async fn find_by_owner(&self, owner: &Owner) -> Result<Vec<Account>, AccountRepositoryError>;
+    async fn find_by_account_id(
+        &self,
+        account_id: Uuid,
+    ) -> Result<Vec<Transaction>, TransactionRepositoryError>;
 }
 
 #[async_trait]
