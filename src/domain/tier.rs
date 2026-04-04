@@ -7,7 +7,7 @@ pub enum Tier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountLimit {
-    Limited(u32),
+    Limited(u64),
     Unlimited,
 }
 

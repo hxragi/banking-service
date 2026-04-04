@@ -1,5 +1,4 @@
 use thiserror::Error;
-use tokio::sync::oneshot::error;
 
 #[derive(Error, Debug, PartialEq, Eq)]
 pub enum DomainError {
@@ -13,8 +12,6 @@ pub enum DomainError {
     InvalidUserId,
     #[error("invalid org id")]
     InvalidOrgId,
-    #[error("tier limit exceeded")]
-    TierLimitExceeded,
     #[error("same account transfer")]
     SameAccountTransfer,
 }
