@@ -105,6 +105,17 @@ mod tests {
 
             self.create_result.clone()
         }
+
+        async fn find_by_number(
+            &self,
+            _number: &AccountNumber,
+        ) -> Result<Option<Account>, AccountRepositoryError> {
+            unimplemented!("find_by_number is not used in CreateAccount tests")
+        }
+
+        async fn update(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
+            unimplemented!("update is not used in CreateAccount tests")
+        }
     }
 
     struct FakeAccountNumberGenerator {
