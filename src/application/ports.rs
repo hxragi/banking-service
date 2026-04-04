@@ -20,7 +20,7 @@ pub enum AccountNumberGeneratorError {
 #[async_trait]
 pub trait AccountRepository {
     async fn count_by_owner(&self, owner: &Owner) -> Result<u64, AccountRepositoryError>;
-    async fn save(&self, account: &Account) -> Result<(), AccountRepositoryError>;
+    async fn create(&self, account: &Account) -> Result<(), AccountRepositoryError>;
 }
 
 #[async_trait]

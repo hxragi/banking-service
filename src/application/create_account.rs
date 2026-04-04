@@ -66,7 +66,7 @@ impl CreateAccountUseCase {
         let created_at = OffsetDateTime::now_utc();
         let account = Account::new(id, number, owner, balance, created_at);
 
-        self.account_repository.save(&account).await?;
+        self.account_repository.create(&account).await?;
 
         Ok(account)
     }
@@ -88,7 +88,7 @@ mod tests {
 
     struct FakeAccountRepository {
         count_result: Result<u64, AccountRepositoryError>,
-        save_result: Result<(), AccountRepositoryError>,
+        create_result: Result<(), AccountRepositoryError>,
         saved_accounts: Mutex<Vec<Account>>,
     }
 
@@ -98,12 +98,12 @@ mod tests {
             self.count_result.clone()
         }
 
-        async fn save(&self, account: &Account) -> Result<(), AccountRepositoryError> {
-            if self.save_result.is_ok() {
+        async fn create(&self, account: &Account) -> Result<(), AccountRepositoryError> {
+            if self.create_result.is_ok() {
                 self.saved_accounts.lock().unwrap().push(account.clone());
             }
 
-            self.save_result.clone()
+            self.create_result.clone()
         }
     }
 
@@ -133,7 +133,7 @@ mod tests {
     async fn creates_account_when_under_limit() {
         let repo = Arc::new(FakeAccountRepository {
             count_result: Ok(0),
-            save_result: Ok(()),
+            create_result: Ok(()),
             saved_accounts: Mutex::new(vec![]),
         });
 
@@ -158,7 +158,7 @@ mod tests {
     async fn returns_tier_limit_exceeded_when_limit_reached() {
         let repo = Arc::new(FakeAccountRepository {
             count_result: Ok(1),
-            save_result: Ok(()),
+            create_result: Ok(()),
             saved_accounts: Mutex::new(vec![]),
         });
 
@@ -180,7 +180,7 @@ mod tests {
     async fn returns_repository_error_when_count_by_owner_fails() {
         let repo = Arc::new(FakeAccountRepository {
             count_result: Err(AccountRepositoryError::OperationFailed),
-            save_result: Ok(()),
+            create_result: Ok(()),
             saved_accounts: Mutex::new(vec![]),
         });
 
@@ -204,7 +204,7 @@ mod tests {
     async fn returns_generator_error_when_generation_fails() {
         let repo = Arc::new(FakeAccountRepository {
             count_result: Ok(0),
-            save_result: Ok(()),
+            create_result: Ok(()),
             saved_accounts: Mutex::new(vec![]),
         });
 
@@ -228,7 +228,7 @@ mod tests {
     async fn returns_repository_error_when_save_fails() {
         let repo = Arc::new(FakeAccountRepository {
             count_result: Ok(0),
-            save_result: Err(AccountRepositoryError::OperationFailed),
+            create_result: Err(AccountRepositoryError::OperationFailed),
             saved_accounts: Mutex::new(vec![]),
         });
 
