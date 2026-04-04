@@ -80,6 +80,13 @@ mod tests {
         async fn update(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
             unimplemented!("update is not used in GetAccount tests")
         }
+
+        async fn find_by_owner(
+            &self,
+            _owner: &Owner,
+        ) -> Result<Vec<Account>, AccountRepositoryError> {
+            unimplemented!("find_by_owner is not used in this test")
+        }
     }
 
     fn make_owner() -> Owner {

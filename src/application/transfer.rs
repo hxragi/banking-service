@@ -164,6 +164,13 @@ mod tests {
             self.updated_accounts.lock().unwrap().push(account.clone());
             Ok(())
         }
+
+        async fn find_by_owner(
+            &self,
+            _owner: &Owner,
+        ) -> Result<Vec<Account>, AccountRepositoryError> {
+            unimplemented!("find_by_owner is not used in this test")
+        }
     }
 
     struct FakeTransactionRepository {

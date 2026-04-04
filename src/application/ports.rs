@@ -33,6 +33,7 @@ pub trait AccountRepository {
         number: &AccountNumber,
     ) -> Result<Option<Account>, AccountRepositoryError>;
     async fn update(&self, account: &Account) -> Result<(), AccountRepositoryError>;
+    async fn find_by_owner(&self, owner: &Owner) -> Result<Vec<Account>, AccountRepositoryError>;
 }
 
 #[async_trait]
