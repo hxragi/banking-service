@@ -83,13 +83,6 @@ mod tests {
             self.find_by_owner_result.clone()?;
             Ok(self.accounts.lock().unwrap().clone())
         }
-
-        async fn find_by_account_id(
-            &self,
-            _account_id: Uuid,
-        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
-            unimplemented!("find_by_account_id is not used in this test")
-        }
     }
 
     fn make_owner() -> Owner {

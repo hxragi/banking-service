@@ -35,10 +35,6 @@ pub trait AccountRepository {
     ) -> Result<Option<Account>, AccountRepositoryError>;
     async fn update(&self, account: &Account) -> Result<(), AccountRepositoryError>;
     async fn find_by_owner(&self, owner: &Owner) -> Result<Vec<Account>, AccountRepositoryError>;
-    async fn find_by_account_id(
-        &self,
-        account_id: Uuid,
-    ) -> Result<Vec<Transaction>, TransactionRepositoryError>;
 }
 
 #[async_trait]
@@ -49,4 +45,8 @@ pub trait AccountNumberGenerator {
 #[async_trait]
 pub trait TransactionRepository {
     async fn create(&self, transaction: &Transaction) -> Result<(), TransactionRepositoryError>;
+    async fn find_by_account_id(
+        &self,
+        account_id: Uuid,
+    ) -> Result<Vec<Transaction>, TransactionRepositoryError>;
 }

@@ -126,6 +126,13 @@ mod tests {
         ) -> Result<(), TransactionRepositoryError> {
             unimplemented!("create is not used in GetTransactions tests")
         }
+        async fn find_by_account_id(
+            &self,
+            _account_id: Uuid,
+        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
+            self.find_result.clone()?;
+            Ok(self.transactions.lock().unwrap().clone())
+        }
     }
 
     fn make_owner() -> Owner {

@@ -171,13 +171,6 @@ mod tests {
         ) -> Result<Vec<Account>, AccountRepositoryError> {
             unimplemented!("find_by_owner is not used in this test")
         }
-
-        async fn find_by_account_id(
-            &self,
-            _account_id: Uuid,
-        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
-            unimplemented!("find_by_account_id is not used in this test")
-        }
     }
 
     struct FakeTransactionRepository {
@@ -197,6 +190,13 @@ mod tests {
                 .unwrap()
                 .push(transaction.clone());
             Ok(())
+        }
+
+        async fn find_by_account_id(
+            &self,
+            _account_id: Uuid,
+        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
+            unimplemented!("find_by_account_id is not used in this test")
         }
     }
 
