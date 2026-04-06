@@ -1,9 +1,11 @@
 services:
   database:
-    image: 'postgres:18'
+    image: postgres:18
     ports:
-      - 15432:5432
-    env_file:
-      - .env
+      - "15432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bank}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank}
+      POSTGRES_DB: ${POSTGRES_DB:-bank}
     volumes:
-      - ./.docker/postgres:/var/lib/postgresql/
+      - ./.docker/postgres:/var/lib/postgresql
