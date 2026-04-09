@@ -25,3 +25,4 @@ uuid = { version = "1.23.0", features = ["v4", "serde"] }
 
 [build-dependencies]
 tonic-build = "0.14.5"
+tonic-prost-build = "0.14.5"
