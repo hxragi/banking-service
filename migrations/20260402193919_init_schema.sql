@@ -9,7 +9,7 @@ CREATE TABLE accounts (
   number TEXT NOT NULL UNIQUE,
   user_id TEXT NULL,
   org_id TEXT NULL,
-  balance BIGINT NOT NULL,
+  balance BIGINT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   CONSTRAINT check_accounts_balance_non_negative
