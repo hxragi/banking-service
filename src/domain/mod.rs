@@ -1,11 +1,13 @@
 pub mod account;
 pub mod account_number;
 pub mod amount;
-pub mod balance;
+pub(crate) mod balance;
 pub mod errors;
 pub mod org_id;
 pub mod owner;
-pub mod tier;
+pub(crate) mod owner_tier;
+pub(crate) mod tier;
 pub mod transaction;
+pub(crate) mod transaction_event;
 pub mod transaction_kind;
 pub mod user_id;

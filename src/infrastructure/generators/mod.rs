@@ -1,1 +1,1 @@
-pub mod uuid_account_number_generator;
+pub mod sequence_account_number_generator;

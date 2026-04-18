@@ -1,344 +1,123 @@
 use std::sync::Arc;
 
-use thiserror::Error;
-use time::OffsetDateTime;
-use uuid::Uuid;
-
 use crate::{
-    application::ports::{
-        AccountRepository, AccountRepositoryError, TransactionRepository,
-        TransactionRepositoryError,
+    application::{
+        ports::{BalanceCachePort, OperationError},
+        transaction_manager::{
+            TransactionManager, TransactionOperation, WithdrawInput as TxWithdrawInput,
+        },
     },
-    domain::{
-        account::Account, account_number::AccountNumber, amount::Amount, errors::DomainError,
-        transaction::Transaction,
-    },
+    domain::{account::Account, account_number::AccountNumber, amount::Amount},
 };
 
+#[derive(Debug)]
 pub struct WithdrawInput {
     pub account_number: AccountNumber,
     pub amount: Amount,
-}
-
-#[derive(Error, Debug)]
-pub enum WithdrawError {
-    #[error("account not found")]
-    AccountNotFound,
-    #[error("insufficient funds")]
-    InsufficientFunds,
-    #[error("account repository error")]
-    AccountRepository(#[from] AccountRepositoryError),
-    #[error("transaction repository error")]
-    TransactionRepository(#[from] TransactionRepositoryError),
+    pub idempotency_key: Option<String>,
 }
 
 pub struct WithdrawUseCase {
-    account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
+    transaction_manager: Arc<TransactionManager>,
+    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 impl WithdrawUseCase {
     pub fn new(
-        account_repository: Arc<dyn AccountRepository + Send + Sync>,
-        transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
+        transaction_manager: Arc<TransactionManager>,
+        balance_cache: Arc<dyn BalanceCachePort>,
     ) -> Self {
         Self {
-            account_repository,
-            transaction_repository,
+            transaction_manager,
+            balance_cache,
         }
     }
 
-    pub async fn execute(&self, input: WithdrawInput) -> Result<Account, WithdrawError> {
+    #[tracing::instrument(
+        skip(self),
+        fields(
+            account_number = %input.account_number,
+            amount = %input.amount,
+            idempotency_key = ?input.idempotency_key
+        )
+    )]
+    pub async fn execute(&self, input: WithdrawInput) -> Result<Account, OperationError> {
+        let account_number_str = input.account_number.to_string();
         let WithdrawInput {
             account_number,
             amount,
+            idempotency_key,
         } = input;
-        let account = self
-            .account_repository
-            .find_by_number(&account_number)
-            .await?
-            .ok_or(WithdrawError::AccountNotFound)?;
 
-        let updated_account = account.withdraw(amount).map_err(|err| match err {
-            DomainError::InsufficientFunds => WithdrawError::InsufficientFunds,
-            _ => unreachable!("unexpected domain error from account withdraw"),
-        })?;
-
-        let transaction = Transaction::withdraw(
-            Uuid::new_v4(),
+        let operation = TransactionOperation::Withdraw(TxWithdrawInput {
+            account_number,
             amount,
-            updated_account.id(),
-            OffsetDateTime::now_utc(),
-        );
-        self.account_repository.update(&updated_account).await?;
-        self.transaction_repository.create(&transaction).await?;
+        });
 
-        Ok(updated_account)
+        let result = self
+            .transaction_manager
+            .execute(operation, idempotency_key)
+            .await;
+
+        match result {
+            Ok(output) => {
+                let account = output
+                    .into_account()
+                    .ok_or_else(|| OperationError::Unavailable {
+                        reason: "invalid operation result".to_string(),
+                    })?;
+                self.balance_cache.invalidate(&account.id()).await;
+                tracing::info!(account_number = %account.number(), new_balance = %account.balance(), "withdraw completed");
+                Ok(account)
+            }
+            Err(e) => {
+                tracing::warn!(account_number = %account_number_str, error = %e, "withdraw failed");
+                Err(OperationError::from(e))
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use crate::application::ports::AccountRepositoryError;
+    use crate::application::transaction_manager::TransactionError;
 
-    use crate::application::ports::{
-        AccountRepository, AccountRepositoryError, TransactionRepository,
-        TransactionRepositoryError,
-    };
-    use crate::domain::{
-        account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
-        owner::Owner, transaction::Transaction, user_id::UserId,
-    };
-    use time::OffsetDateTime;
-    use uuid::Uuid;
-
-    struct FakeAccountRepository {
-        found_account: Mutex<Option<Account>>,
-        find_result: Result<(), AccountRepositoryError>,
-        update_result: Result<(), AccountRepositoryError>,
-        updated_accounts: Mutex<Vec<Account>>,
+    #[test]
+    fn withdraw_error_from_transaction_error_account_not_found() {
+        let tx_err = TransactionError::AccountNotFound;
+        let withdraw_err: OperationError = tx_err.into();
+        assert!(matches!(withdraw_err, OperationError::NotFound { .. }));
     }
 
-    #[async_trait]
-    impl AccountRepository for FakeAccountRepository {
-        async fn count_by_owner(&self, _owner: &Owner) -> Result<u64, AccountRepositoryError> {
-            Ok(0)
-        }
-
-        async fn create(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            Ok(())
-        }
-
-        async fn find_by_number(
-            &self,
-            _number: &AccountNumber,
-        ) -> Result<Option<Account>, AccountRepositoryError> {
-            self.find_result.clone()?;
-            Ok(self.found_account.lock().unwrap().clone())
-        }
-
-        async fn update(&self, account: &Account) -> Result<(), AccountRepositoryError> {
-            self.update_result.clone()?;
-            self.updated_accounts.lock().unwrap().push(account.clone());
-            Ok(())
-        }
-
-        async fn find_by_owner(
-            &self,
-            _owner: &Owner,
-        ) -> Result<Vec<Account>, AccountRepositoryError> {
-            unimplemented!("find_by_owner is not used in this test")
-        }
+    #[test]
+    fn withdraw_error_from_transaction_error_insufficient_funds() {
+        let tx_err = TransactionError::InsufficientFunds;
+        let withdraw_err: OperationError = tx_err.into();
+        assert!(matches!(withdraw_err, OperationError::InsufficientFunds));
     }
 
-    struct FakeTransactionRepository {
-        create_result: Result<(), TransactionRepositoryError>,
-        created_transactions: Mutex<Vec<Transaction>>,
+    #[test]
+    fn withdraw_error_from_transaction_error_account_unavailable() {
+        let tx_err = TransactionError::AccountUnavailable;
+        let withdraw_err: OperationError = tx_err.into();
+        assert!(matches!(withdraw_err, OperationError::Unavailable { .. }));
     }
 
-    #[async_trait]
-    impl TransactionRepository for FakeTransactionRepository {
-        async fn create(
-            &self,
-            transaction: &Transaction,
-        ) -> Result<(), TransactionRepositoryError> {
-            self.create_result.clone()?;
-            self.created_transactions
-                .lock()
-                .unwrap()
-                .push(transaction.clone());
-            Ok(())
-        }
-
-        async fn find_by_account_id(
-            &self,
-            _account_id: Uuid,
-        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
-            unimplemented!("find_by_account_id is not used in this test")
-        }
+    #[test]
+    fn withdraw_error_from_transaction_error_lock_timeout() {
+        let tx_err = TransactionError::AccountRepository(AccountRepositoryError::LockTimeout);
+        let withdraw_err: OperationError = tx_err.into();
+        assert!(matches!(withdraw_err, OperationError::LockTimeout));
     }
 
-    fn make_owner() -> Owner {
-        Owner::User(UserId::new("user-1").unwrap())
-    }
-
-    fn make_account(balance: u64) -> Account {
-        Account::new(
-            Uuid::new_v4(),
-            AccountNumber::new("acc-1").unwrap(),
-            make_owner(),
-            Balance::new(balance),
-            OffsetDateTime::UNIX_EPOCH,
-        )
-    }
-
-    fn make_input() -> WithdrawInput {
-        WithdrawInput {
-            account_number: AccountNumber::new("acc-1").unwrap(),
-            amount: Amount::new(50).unwrap(),
-        }
-    }
-
-    #[tokio::test]
-    async fn withdraw_updates_account_and_creates_transaction() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(make_account(100))),
-            find_result: Ok(()),
-            update_result: Ok(()),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Ok(()),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo.clone(), tx_repo.clone());
-
-        let updated_account = use_case.execute(make_input()).await.unwrap();
-
-        assert_eq!(updated_account.balance().as_u64(), 50);
-
-        let updated_accounts = repo.updated_accounts.lock().unwrap();
-        assert_eq!(updated_accounts.len(), 1);
-        assert_eq!(updated_accounts[0].balance().as_u64(), 50);
-
-        let created_transactions = tx_repo.created_transactions.lock().unwrap();
-        assert_eq!(created_transactions.len(), 1);
-        assert_eq!(created_transactions[0].amount().as_u64(), 50);
-    }
-
-    #[tokio::test]
-    async fn returns_account_not_found_when_account_missing() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(None),
-            find_result: Ok(()),
-            update_result: Ok(()),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Ok(()),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo.clone(), tx_repo.clone());
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(result, Err(WithdrawError::AccountNotFound)));
-
-        assert!(repo.updated_accounts.lock().unwrap().is_empty());
-        assert!(tx_repo.created_transactions.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn returns_account_repository_error_when_find_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(make_account(100))),
-            find_result: Err(AccountRepositoryError::OperationFailed),
-            update_result: Ok(()),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Ok(()),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo, tx_repo);
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(
-            result,
-            Err(WithdrawError::AccountRepository(
-                AccountRepositoryError::OperationFailed
-            ))
+    #[test]
+    fn withdraw_error_from_transaction_error_connection_error() {
+        let tx_err = TransactionError::AccountRepository(AccountRepositoryError::ConnectionError(
+            "db down".to_string(),
         ));
-    }
-
-    #[tokio::test]
-    async fn returns_account_repository_error_when_update_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(make_account(100))),
-            find_result: Ok(()),
-            update_result: Err(AccountRepositoryError::OperationFailed),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Ok(()),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo.clone(), tx_repo.clone());
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(
-            result,
-            Err(WithdrawError::AccountRepository(
-                AccountRepositoryError::OperationFailed
-            ))
-        ));
-
-        assert!(tx_repo.created_transactions.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn returns_transaction_repository_error_when_create_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(make_account(100))),
-            find_result: Ok(()),
-            update_result: Ok(()),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Err(TransactionRepositoryError::TransactionFailed),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo.clone(), tx_repo.clone());
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(
-            result,
-            Err(WithdrawError::TransactionRepository(
-                TransactionRepositoryError::TransactionFailed
-            ))
-        ));
-
-        let updated_accounts = repo.updated_accounts.lock().unwrap();
-        assert_eq!(updated_accounts.len(), 1);
-        assert_eq!(updated_accounts[0].balance().as_u64(), 50);
-    }
-
-    #[tokio::test]
-    async fn returns_insufficient_funds_when_balance_is_too_low() {
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(make_account(10))),
-            find_result: Ok(()),
-            update_result: Ok(()),
-            updated_accounts: Mutex::new(vec![]),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            create_result: Ok(()),
-            created_transactions: Mutex::new(vec![]),
-        });
-
-        let use_case = WithdrawUseCase::new(repo.clone(), tx_repo.clone());
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(result, Err(WithdrawError::InsufficientFunds)));
-
-        assert!(repo.updated_accounts.lock().unwrap().is_empty());
-        assert!(tx_repo.created_transactions.lock().unwrap().is_empty());
+        let withdraw_err: OperationError = tx_err.into();
+        assert!(matches!(withdraw_err, OperationError::ConnectionError(_)));
     }
 }

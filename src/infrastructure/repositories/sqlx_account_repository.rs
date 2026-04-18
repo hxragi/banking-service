@@ -1,4 +1,4 @@
-use sqlx::{PgPool, prelude::FromRow};
+use sqlx::{PgPool, Row, postgres::PgRow};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -9,25 +9,16 @@ use crate::{
         account::Account, account_number::AccountNumber, balance::Balance, errors::DomainError,
         org_id::OrgId, owner::Owner, user_id::UserId,
     },
+    infrastructure::database::error::classify,
 };
 
 pub struct SqlxAccountRepository {
     pool: PgPool,
 }
 
-#[derive(Debug, FromRow)]
-pub struct AccountRow {
-    id: Uuid,
-    number: String,
-    user_id: Option<String>,
-    org_id: Option<String>,
-    balance: i64,
-    created_at: OffsetDateTime,
-}
-
 #[derive(Debug, Error)]
 pub enum SqlxAccountRepositoryError {
-    #[error("account conversation error: {0}")]
+    #[error("account conversion error: {0}")]
     AccountConversionError(#[from] DomainError),
     #[error("failed to identify owner")]
     FailedIdentifyOwner,
@@ -42,45 +33,25 @@ impl SqlxAccountRepository {
         Self { pool }
     }
 
-    pub async fn find_by_number(
-        &self,
-        number: &AccountNumber,
-    ) -> Result<Option<Account>, SqlxAccountRepositoryError> {
-        let row: Option<AccountRow> = sqlx::query_as!(
-            AccountRow,
-            r#"
-            SELECT id, number, user_id, org_id, balance, created_at
-            FROM accounts
-            WHERE number = $1
-            "#,
-            number.as_str()
-        )
-        .fetch_optional(&self.pool)
-        .await?;
-
-        match row {
-            Some(r) => {
-                let account = Account::try_from(r)?;
-                Ok(Some(account))
-            }
-            None => Ok(None),
-        }
-    }
-}
-
-impl TryFrom<AccountRow> for Account {
-    type Error =
-        crate::infrastructure::repositories::sqlx_account_repository::SqlxAccountRepositoryError;
-
-    fn try_from(row: AccountRow) -> Result<Account, Self::Error> {
-        let AccountRow {
-            id,
-            number,
-            user_id,
-            org_id,
-            balance,
-            created_at,
-        } = row;
+    fn row_to_account(&self, row: &PgRow) -> Result<Account, SqlxAccountRepositoryError> {
+        let id: Uuid = row
+            .try_get("id")
+            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
+        let number: String = row
+            .try_get("number")
+            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
+        let user_id: Option<String> = row
+            .try_get("user_id")
+            .map_err(|_| SqlxAccountRepositoryError::FailedIdentifyOwner)?;
+        let org_id: Option<String> = row
+            .try_get("org_id")
+            .map_err(|_| SqlxAccountRepositoryError::FailedIdentifyOwner)?;
+        let balance: i64 = row
+            .try_get("balance")
+            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
+        let created_at: OffsetDateTime = row
+            .try_get("created_at")
+            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
 
         let owner = match (user_id, org_id) {
             (Some(user_id), None) => Owner::User(UserId::new(&user_id)?),
@@ -109,37 +80,64 @@ impl AccountRepository for SqlxAccountRepository {
         &self,
         number: &AccountNumber,
     ) -> Result<Option<Account>, AccountRepositoryError> {
-        self.find_by_number(number).await.map_err(|e| {
-            tracing::error!(err = %e, "failed to find account by number");
-            AccountRepositoryError::OperationFailed
-        })
+        let row = sqlx::query(
+            r#"
+            SELECT id, number, user_id, org_id, balance, created_at
+            FROM accounts
+            WHERE number = $1
+            "#
+        )
+        .bind(number.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            let context = classify(&e, "find_by_number");
+            tracing::warn!(err = %context, account_number = %number, "failed to find account by number");
+            AccountRepositoryError::OperationFailed {
+                operation: "find_by_number".to_string(),
+                reason: context,
+            }
+        })?;
+
+        match row {
+            Some(row) => self.row_to_account(&row)
+                .map_err(|e| {
+                    tracing::error!(err = %e, account_number = %number, "failed to convert account row");
+                    AccountRepositoryError::OperationFailed {
+                        operation: "row_conversion".to_string(),
+                        reason: e.to_string(),
+                    }
+                })
+                .map(Some),
+            None => Ok(None),
+        }
     }
 
     async fn count_by_owner(&self, owner: &Owner) -> Result<u64, AccountRepositoryError> {
-        let count = match owner {
+        let count: i64 = match owner {
             Owner::User(user_id) => {
-                sqlx::query_scalar!(
-                    r#"SELECT COUNT(*) FROM accounts WHERE user_id = $1"#,
-                    user_id.as_str()
-                )
-                .fetch_one(&self.pool)
-                .await
+                sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM accounts WHERE user_id = $1"#)
+                    .bind(user_id.as_str())
+                    .fetch_one(&self.pool)
+                    .await
             }
             Owner::Org(org_id) => {
-                sqlx::query_scalar!(
-                    r#"SELECT COUNT(*) FROM accounts WHERE org_id = $1"#,
-                    org_id.as_str()
-                )
-                .fetch_one(&self.pool)
-                .await
+                sqlx::query_scalar(r#"SELECT COUNT(*)::bigint FROM accounts WHERE org_id = $1"#)
+                    .bind(org_id.as_str())
+                    .fetch_one(&self.pool)
+                    .await
             }
         }
         .map_err(|e| {
-            tracing::error!(err = %e, "failed to count accounts by owner");
-            AccountRepositoryError::OperationFailed
+            let context = classify(&e, "count_by_owner");
+            tracing::warn!(err = %context, owner = ?owner, "failed to count accounts by owner");
+            AccountRepositoryError::OperationFailed {
+                operation: "count_by_owner".to_string(),
+                reason: context,
+            }
         })?;
 
-        Ok(count.unwrap_or(0) as u64)
+        Ok(count as u64)
     }
 
     async fn create(&self, account: &Account) -> Result<(), AccountRepositoryError> {
@@ -155,47 +153,42 @@ impl AccountRepository for SqlxAccountRepository {
         };
 
         let balance =
-            i64::try_from(balance).map_err(|_| AccountRepositoryError::OperationFailed)?;
+            i64::try_from(balance).map_err(|_| AccountRepositoryError::OperationFailed {
+                operation: "balance_conversion".to_string(),
+                reason: "balance value out of range".to_string(),
+            })?;
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO accounts (id, number, user_id, org_id, balance, created_at)
             VALUES ($1, $2, $3, $4, $5, $6)
             "#,
-            id,
-            number,
-            user_id,
-            org_id,
-            balance,
-            created_at,
         )
+        .bind(id)
+        .bind(number)
+        .bind(user_id)
+        .bind(org_id)
+        .bind(balance)
+        .bind(created_at)
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            tracing::error!(err = %e, "failed to create account");
-            AccountRepositoryError::OperationFailed
-        })?;
+            let context = classify(&e, "create");
+            tracing::error!(err = %context, account_number = %number, "failed to create account");
 
-        Ok(())
-    }
-
-    async fn update(&self, account: &Account) -> Result<(), AccountRepositoryError> {
-        let id = account.id();
-        let balance = account.balance().as_u64();
-
-        let balance =
-            i64::try_from(balance).map_err(|_| AccountRepositoryError::OperationFailed)?;
-
-        sqlx::query!(
-            r#"UPDATE accounts SET balance = $1 WHERE id = $2"#,
-            balance,
-            id,
-        )
-        .execute(&self.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(err = %e, "failed to update account");
-            AccountRepositoryError::OperationFailed
+            if let sqlx::Error::Database(db_err) = &e
+                && (db_err.message().contains("duplicate key")
+                    || db_err.message().contains("unique constraint"))
+            {
+                return AccountRepositoryError::UniqueConstraintViolation(format!(
+                    "account number {} already exists",
+                    number
+                ));
+            }
+            AccountRepositoryError::OperationFailed {
+                operation: "create".to_string(),
+                reason: context,
+            }
         })?;
 
         Ok(())
@@ -204,44 +197,49 @@ impl AccountRepository for SqlxAccountRepository {
     async fn find_by_owner(&self, owner: &Owner) -> Result<Vec<Account>, AccountRepositoryError> {
         let rows = match owner {
             Owner::User(user_id) => {
-                sqlx::query_as!(
-                    AccountRow,
+                sqlx::query(
                     r#"
                     SELECT id, number, user_id, org_id, balance, created_at
                     FROM accounts
                     WHERE user_id = $1
                     "#,
-                    user_id.as_str()
                 )
+                .bind(user_id.as_str())
                 .fetch_all(&self.pool)
                 .await
             }
             Owner::Org(org_id) => {
-                sqlx::query_as!(
-                    AccountRow,
+                sqlx::query(
                     r#"
                     SELECT id, number, user_id, org_id, balance, created_at
                     FROM accounts
                     WHERE org_id = $1
                     "#,
-                    org_id.as_str()
                 )
+                .bind(org_id.as_str())
                 .fetch_all(&self.pool)
                 .await
             }
         }
         .map_err(|e| {
-            tracing::error!(err = %e, "failed to find accounts by owner");
-            AccountRepositoryError::OperationFailed
+            let context = classify(&e, "find_by_owner");
+            tracing::error!(err = %context, owner = ?owner, "failed to find accounts by owner");
+            AccountRepositoryError::OperationFailed {
+                operation: "find_by_owner".to_string(),
+                reason: context,
+            }
         })?;
 
         let accounts: Vec<Account> = rows
-            .into_iter()
-            .map(Account::try_from)
+            .iter()
+            .map(|row| self.row_to_account(row))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 tracing::error!(err = %e, "failed to convert account row");
-                AccountRepositoryError::OperationFailed
+                AccountRepositoryError::OperationFailed {
+                    operation: "row_conversion".to_string(),
+                    reason: e.to_string(),
+                }
             })?;
 
         Ok(accounts)

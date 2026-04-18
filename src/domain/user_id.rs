@@ -20,6 +20,7 @@ impl UserId {
         Ok(Self(Self::validate(input)?.to_owned()))
     }
 
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -36,12 +37,6 @@ impl TryFrom<&str> for UserId {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         UserId::new(value)
-    }
-}
-
-impl AsRef<str> for UserId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
     }
 }
 

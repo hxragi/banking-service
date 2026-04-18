@@ -21,12 +21,12 @@ impl Transaction {
         created_at: OffsetDateTime,
     ) -> Self {
         Self {
-            id: id,
+            id,
             kind: TransactionKind::Deposit,
-            amount: amount,
+            amount,
             from_account_id: None,
             to_account_id: Some(to_account_id),
-            created_at: created_at,
+            created_at,
         }
     }
 
@@ -37,12 +37,12 @@ impl Transaction {
         created_at: OffsetDateTime,
     ) -> Self {
         Self {
-            id: id,
+            id,
             kind: TransactionKind::Withdraw,
-            amount: amount,
+            amount,
             from_account_id: Some(from_account_id),
             to_account_id: None,
-            created_at: created_at,
+            created_at,
         }
     }
 
@@ -55,12 +55,12 @@ impl Transaction {
     ) -> Result<Self, DomainError> {
         if from_account_id != to_account_id {
             Ok(Self {
-                id: id,
+                id,
                 kind: TransactionKind::Transfer,
-                amount: amount,
+                amount,
                 from_account_id: Some(from_account_id),
                 to_account_id: Some(to_account_id),
-                created_at: created_at,
+                created_at,
             })
         } else {
             Err(DomainError::SameAccountTransfer)
@@ -79,11 +79,11 @@ impl Transaction {
         self.amount
     }
 
-    pub fn from_account_id(&self) -> Option<Uuid> {
+    pub fn source_account_id(&self) -> Option<Uuid> {
         self.from_account_id
     }
 
-    pub fn to_account_id(&self) -> Option<Uuid> {
+    pub fn destination_account_id(&self) -> Option<Uuid> {
         self.to_account_id
     }
 
@@ -111,8 +111,8 @@ mod tests {
         assert_eq!(transaction.id(), id);
         assert_eq!(transaction.kind(), TransactionKind::Deposit);
         assert_eq!(transaction.amount(), amount);
-        assert_eq!(transaction.from_account_id(), None);
-        assert_eq!(transaction.to_account_id(), Some(to_account_id));
+        assert_eq!(transaction.source_account_id(), None);
+        assert_eq!(transaction.destination_account_id(), Some(to_account_id));
         assert_eq!(transaction.created_at(), created_at);
     }
 
@@ -128,8 +128,8 @@ mod tests {
         assert_eq!(transaction.id(), id);
         assert_eq!(transaction.kind(), TransactionKind::Withdraw);
         assert_eq!(transaction.amount(), amount);
-        assert_eq!(transaction.from_account_id(), Some(from_account_id));
-        assert_eq!(transaction.to_account_id(), None);
+        assert_eq!(transaction.source_account_id(), Some(from_account_id));
+        assert_eq!(transaction.destination_account_id(), None);
         assert_eq!(transaction.created_at(), created_at);
     }
 
@@ -147,8 +147,8 @@ mod tests {
         assert_eq!(transaction.id(), id);
         assert_eq!(transaction.kind(), TransactionKind::Transfer);
         assert_eq!(transaction.amount(), amount);
-        assert_eq!(transaction.from_account_id(), Some(from_account_id));
-        assert_eq!(transaction.to_account_id(), Some(to_account_id));
+        assert_eq!(transaction.source_account_id(), Some(from_account_id));
+        assert_eq!(transaction.destination_account_id(), Some(to_account_id));
         assert_eq!(transaction.created_at(), created_at);
     }
 

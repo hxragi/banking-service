@@ -1,63 +1,52 @@
 use std::sync::Arc;
 
-use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     application::ports::{
-        AccountNumberGenerator, AccountNumberGeneratorError, AccountRepository,
-        AccountRepositoryError,
+        AccountNumberGenerator, AccountRepository, OperationError, OwnerTierRepository,
     },
-    domain::{
-        account::Account,
-        balance::Balance,
-        owner::Owner,
-        tier::{AccountLimit, Tier},
-    },
+    domain::{account::Account, balance::Balance, owner::Owner},
 };
 
 pub struct CreateAccountInput {
     pub owner: Owner,
-    pub tier: Tier,
-}
-
-#[derive(Error, Debug)]
-pub enum CreateAccountError {
-    #[error("tier limit exceeded")]
-    TierLimitExceeded,
-    #[error("account repository error")]
-    AccountRepository(#[from] AccountRepositoryError),
-    #[error("account number generator error")]
-    AccountNumberGenerator(#[from] AccountNumberGeneratorError),
 }
 
 pub struct CreateAccountUseCase {
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
     account_number_generator: Arc<dyn AccountNumberGenerator + Send + Sync>,
+    owner_tier_repository: Arc<dyn OwnerTierRepository + Send + Sync>,
 }
 
 impl CreateAccountUseCase {
     pub fn new(
         account_repository: Arc<dyn AccountRepository + Send + Sync>,
         account_number_generator: Arc<dyn AccountNumberGenerator + Send + Sync>,
+        owner_tier_repository: Arc<dyn OwnerTierRepository + Send + Sync>,
     ) -> Self {
         Self {
             account_repository,
             account_number_generator,
+            owner_tier_repository,
         }
     }
 
-    pub async fn execute(&self, input: CreateAccountInput) -> Result<Account, CreateAccountError> {
-        let CreateAccountInput { owner, tier } = input;
+    pub async fn execute(&self, input: CreateAccountInput) -> Result<Account, OperationError> {
+        let CreateAccountInput { owner } = input;
 
+        let owner_tier = self.owner_tier_repository.get_or_default(&owner).await?;
+
+        let tier = owner_tier.tier();
         let limit = tier.account_limit();
+
         let count = self.account_repository.count_by_owner(&owner).await?;
 
-        if let AccountLimit::Limited(limit) = limit {
-            if count >= limit {
-                return Err(CreateAccountError::TierLimitExceeded);
-            }
+        if let Some(limit) = limit
+            && count >= limit
+        {
+            return Err(OperationError::TierLimitExceeded);
         }
 
         let number = self.account_number_generator.generate().await?;
@@ -75,195 +64,191 @@ impl CreateAccountUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use crate::application::ports::{
-        AccountNumberGenerator, AccountNumberGeneratorError, AccountRepository,
-        AccountRepositoryError, TransactionRepositoryError,
-    };
-    use crate::domain::transaction::Transaction;
-    use crate::domain::{
-        account::Account, account_number::AccountNumber, owner::Owner, tier::Tier, user_id::UserId,
+        AccountNumberGeneratorError, AccountRepositoryError, RepositoryOperation,
     };
 
-    struct FakeAccountRepository {
-        count_result: Result<u64, AccountRepositoryError>,
-        create_result: Result<(), AccountRepositoryError>,
-        saved_accounts: Mutex<Vec<Account>>,
-    }
+    use crate::domain::{owner::Owner, tier::Tier, user_id::UserId};
 
-    #[async_trait]
-    impl AccountRepository for FakeAccountRepository {
-        async fn count_by_owner(&self, _owner: &Owner) -> Result<u64, AccountRepositoryError> {
-            self.count_result.clone()
-        }
+    use crate::test_utils::mocks::{
+        MockAccountNumberGenerator, MockAccountRepository, MockOwnerTierRepository,
+    };
 
-        async fn create(&self, account: &Account) -> Result<(), AccountRepositoryError> {
-            if self.create_result.is_ok() {
-                self.saved_accounts.lock().unwrap().push(account.clone());
-            }
+    #[tokio::test]
+    async fn creates_account_when_limit_not_exceeded() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(0))
+                .with_create_result(Ok(())),
+        );
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Basic));
 
-            self.create_result.clone()
-        }
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
 
-        async fn find_by_number(
-            &self,
-            _number: &AccountNumber,
-        ) -> Result<Option<Account>, AccountRepositoryError> {
-            unimplemented!("find_by_number is not used in CreateAccount tests")
-        }
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
 
-        async fn update(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            unimplemented!("update is not used in CreateAccount tests")
-        }
+        let result = use_case.execute(input).await;
 
-        async fn find_by_owner(
-            &self,
-            _owner: &Owner,
-        ) -> Result<Vec<Account>, AccountRepositoryError> {
-            unimplemented!("find_by_owner is not used in this test")
-        }
-    }
-
-    struct FakeAccountNumberGenerator {
-        result: Result<AccountNumber, AccountNumberGeneratorError>,
-    }
-
-    #[async_trait]
-    impl AccountNumberGenerator for FakeAccountNumberGenerator {
-        async fn generate(&self) -> Result<AccountNumber, AccountNumberGeneratorError> {
-            self.result.clone()
-        }
-    }
-
-    fn make_owner() -> Owner {
-        Owner::User(UserId::new("user-1").unwrap())
-    }
-
-    fn make_input(tier: Tier) -> CreateAccountInput {
-        CreateAccountInput {
-            owner: make_owner(),
-            tier,
-        }
+        assert!(result.is_ok());
+        let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;
+        assert_eq!(accounts.len(), 1);
     }
 
     #[tokio::test]
-    async fn creates_account_when_under_limit() {
-        let repo = Arc::new(FakeAccountRepository {
-            count_result: Ok(0),
-            create_result: Ok(()),
-            saved_accounts: Mutex::new(vec![]),
-        });
+    async fn returns_error_when_limit_exceeded() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(5))
+                .with_create_result(Ok(())),
+        );
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Basic));
 
-        let generator = Arc::new(FakeAccountNumberGenerator {
-            result: Ok(AccountNumber::new("acc-123").unwrap()),
-        });
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
 
-        let use_case = CreateAccountUseCase::new(repo.clone(), generator);
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
 
-        let account = use_case.execute(make_input(Tier::Basic)).await.unwrap();
+        let result = use_case.execute(input).await;
 
-        assert_eq!(account.number().as_str(), "acc-123");
-        assert_eq!(account.owner(), &make_owner());
-        assert_eq!(account.balance().as_u64(), 0);
-
-        let saved = repo.saved_accounts.lock().unwrap();
-        assert_eq!(saved.len(), 1);
-        assert_eq!(saved[0].number().as_str(), "acc-123");
+        assert!(matches!(result, Err(OperationError::TierLimitExceeded)));
+        let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;
+        assert!(accounts.is_empty());
     }
 
     #[tokio::test]
-    async fn returns_tier_limit_exceeded_when_limit_reached() {
-        let repo = Arc::new(FakeAccountRepository {
-            count_result: Ok(1),
-            create_result: Ok(()),
-            saved_accounts: Mutex::new(vec![]),
-        });
+    async fn returns_error_when_count_query_fails() {
+        let repo = Arc::new(MockAccountRepository::new().with_count_result(Err(
+            AccountRepositoryError::OperationFailed {
+                operation: "count_by_owner".to_string(),
+                reason: "test failure".to_string(),
+            },
+        )));
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Basic));
 
-        let generator = Arc::new(FakeAccountNumberGenerator {
-            result: Ok(AccountNumber::new("acc-123").unwrap()),
-        });
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
 
-        let use_case = CreateAccountUseCase::new(repo.clone(), generator);
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
 
-        let result = use_case.execute(make_input(Tier::Basic)).await;
-
-        assert!(matches!(result, Err(CreateAccountError::TierLimitExceeded)));
-
-        let saved = repo.saved_accounts.lock().unwrap();
-        assert!(saved.is_empty());
-    }
-
-    #[tokio::test]
-    async fn returns_repository_error_when_count_by_owner_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            count_result: Err(AccountRepositoryError::OperationFailed),
-            create_result: Ok(()),
-            saved_accounts: Mutex::new(vec![]),
-        });
-
-        let generator = Arc::new(FakeAccountNumberGenerator {
-            result: Ok(AccountNumber::new("acc-123").unwrap()),
-        });
-
-        let use_case = CreateAccountUseCase::new(repo, generator);
-
-        let result = use_case.execute(make_input(Tier::Basic)).await;
+        let result = use_case.execute(input).await;
 
         assert!(matches!(
             result,
-            Err(CreateAccountError::AccountRepository(
-                AccountRepositoryError::OperationFailed
-            ))
+            Err(OperationError::RepositoryError { operation })
+            if operation == RepositoryOperation::CountByOwner
         ));
     }
 
     #[tokio::test]
-    async fn returns_generator_error_when_generation_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            count_result: Ok(0),
-            create_result: Ok(()),
-            saved_accounts: Mutex::new(vec![]),
-        });
+    async fn returns_error_when_create_fails() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(0))
+                .with_create_result(Err(AccountRepositoryError::OperationFailed {
+                    operation: "create".to_string(),
+                    reason: "test failure".to_string(),
+                })),
+        );
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Basic));
 
-        let generator = Arc::new(FakeAccountNumberGenerator {
-            result: Err(AccountNumberGeneratorError::GenerationFailed),
-        });
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
 
-        let use_case = CreateAccountUseCase::new(repo, generator);
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
 
-        let result = use_case.execute(make_input(Tier::Basic)).await;
+        let result = use_case.execute(input).await;
 
         assert!(matches!(
             result,
-            Err(CreateAccountError::AccountNumberGenerator(
-                AccountNumberGeneratorError::GenerationFailed
-            ))
+            Err(OperationError::RepositoryError { operation })
+            if operation == RepositoryOperation::CreateAccount
         ));
     }
 
     #[tokio::test]
-    async fn returns_repository_error_when_save_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            count_result: Ok(0),
-            create_result: Err(AccountRepositoryError::OperationFailed),
-            saved_accounts: Mutex::new(vec![]),
-        });
+    async fn returns_error_when_generator_fails() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(0))
+                .with_create_result(Ok(())),
+        );
+        let generator = Arc::new(
+            MockAccountNumberGenerator::new()
+                .with_result(Err(AccountNumberGeneratorError::GenerationFailed)),
+        );
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Basic));
 
-        let generator = Arc::new(FakeAccountNumberGenerator {
-            result: Ok(AccountNumber::new("acc-123").unwrap()),
-        });
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
 
-        let use_case = CreateAccountUseCase::new(repo, generator);
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
 
-        let result = use_case.execute(make_input(Tier::Basic)).await;
+        let result = use_case.execute(input).await;
 
         assert!(matches!(
             result,
-            Err(CreateAccountError::AccountRepository(
-                AccountRepositoryError::OperationFailed
-            ))
+            Err(OperationError::RepositoryError { operation })
+            if operation == RepositoryOperation::GenerateAccountNumber
         ));
+        let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;
+        assert!(accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn creates_account_with_premium_tier() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(2))
+                .with_create_result(Ok(())),
+        );
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Premium));
+
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
+
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
+
+        let result = use_case.execute(input).await;
+
+        assert!(result.is_ok());
+        let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;
+        assert_eq!(accounts.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn respects_premium_limit() {
+        let repo = Arc::new(
+            MockAccountRepository::new()
+                .with_count_result(Ok(3))
+                .with_create_result(Ok(())),
+        );
+        let generator = Arc::new(MockAccountNumberGenerator::new());
+        let tier_repo = Arc::new(MockOwnerTierRepository::new(Tier::Premium));
+
+        let use_case = CreateAccountUseCase::new(repo.clone(), generator, tier_repo);
+
+        let input = CreateAccountInput {
+            owner: Owner::User(UserId::new("user-1").unwrap()),
+        };
+
+        let result = use_case.execute(input).await;
+
+        assert!(matches!(result, Err(OperationError::TierLimitExceeded)));
+        let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;
+        assert!(accounts.is_empty());
     }
 }

@@ -5,18 +5,20 @@ pub enum Tier {
     Elite,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AccountLimit {
-    Limited(u64),
-    Unlimited,
-}
-
 impl Tier {
-    pub fn account_limit(self) -> AccountLimit {
+    pub fn account_limit(self) -> Option<u64> {
         match self {
-            Tier::Basic => AccountLimit::Limited(1),
-            Tier::Premium => AccountLimit::Limited(3),
-            Tier::Elite => AccountLimit::Unlimited,
+            Tier::Basic => Some(1),
+            Tier::Premium => Some(3),
+            Tier::Elite => None,
+        }
+    }
+
+    pub fn as_i32(self) -> i32 {
+        match self {
+            Tier::Basic => 1,
+            Tier::Premium => 2,
+            Tier::Elite => 3,
         }
     }
 }
