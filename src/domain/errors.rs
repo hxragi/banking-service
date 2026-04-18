@@ -6,8 +6,6 @@ pub enum DomainError {
     InvalidAccountNumber,
     #[error("invalid amount")]
     InvalidAmount,
-    #[error("insufficient funds")]
-    InsufficientFunds,
     #[error("invalid user id")]
     InvalidUserId,
     #[error("invalid org id")]

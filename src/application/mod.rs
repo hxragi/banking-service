@@ -1,9 +1,10 @@
+pub mod change_tier;
 pub mod create_account;
 pub mod deposit;
-pub mod errors;
 pub mod get_account;
 pub mod get_accounts;
 pub mod get_transactions;
 pub mod ports;
+pub mod transaction_manager;
 pub mod transfer;
 pub mod withdraw;

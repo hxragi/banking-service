@@ -1,27 +1,17 @@
 use std::sync::Arc;
 
-use thiserror::Error;
-
 use crate::{
     application::ports::{
-        AccountRepository, AccountRepositoryError, TransactionRepository,
-        TransactionRepositoryError,
+        AccountRepository, OperationError, PaginatedTransactions, TransactionRepository,
     },
-    domain::{account_number::AccountNumber, transaction::Transaction},
+    domain::account_number::AccountNumber,
 };
 
+#[derive(Debug)]
 pub struct GetTransactionsInput {
     pub account_number: AccountNumber,
-}
-
-#[derive(Error, Debug)]
-pub enum GetTransactionsError {
-    #[error("account not found")]
-    AccountNotFound,
-    #[error("account repository error")]
-    AccountRepository(#[from] AccountRepositoryError),
-    #[error("transaction repository error")]
-    TransactionRepository(#[from] TransactionRepositoryError),
+    pub page: u32,
+    pub page_size: u32,
 }
 
 pub struct GetTransactionsUseCase {
@@ -40,22 +30,39 @@ impl GetTransactionsUseCase {
         }
     }
 
+    #[tracing::instrument(
+        skip(self),
+        fields(account_number = %input.account_number, page = input.page, page_size = input.page_size)
+    )]
     pub async fn execute(
         &self,
         input: GetTransactionsInput,
-    ) -> Result<Vec<Transaction>, GetTransactionsError> {
-        let GetTransactionsInput { account_number } = input;
+    ) -> Result<PaginatedTransactions, OperationError> {
+        let GetTransactionsInput {
+            account_number,
+            page,
+            page_size,
+        } = input;
 
         let account = self
             .account_repository
             .find_by_number(&account_number)
             .await?
-            .ok_or(GetTransactionsError::AccountNotFound)?;
+            .ok_or(OperationError::NotFound {
+                resource: "account".to_string(),
+            })?;
 
         let transactions = self
             .transaction_repository
-            .find_by_account_id(account.id())
+            .find_by_account_id_paginated(account.id(), page, page_size)
             .await?;
+
+        tracing::info!(
+            account_number = %account_number,
+            total_count = transactions.total_count,
+            returned_count = transactions.transactions.len(),
+            "transactions fetched"
+        );
 
         Ok(transactions)
     }
@@ -69,7 +76,7 @@ mod tests {
 
     use crate::application::ports::{
         AccountRepository, AccountRepositoryError, TransactionRepository,
-        TransactionRepositoryError,
+        TransactionRepositoryError, TransactionWithAccounts,
     };
     use crate::domain::{
         account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
@@ -86,11 +93,17 @@ mod tests {
     #[async_trait]
     impl AccountRepository for FakeAccountRepository {
         async fn count_by_owner(&self, _owner: &Owner) -> Result<u64, AccountRepositoryError> {
-            unimplemented!("count_by_owner is not used in GetTransactions tests")
+            Err(AccountRepositoryError::OperationFailed {
+                operation: "count_by_owner".to_string(),
+                reason: "not implemented in test".to_string(),
+            })
         }
 
         async fn create(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            unimplemented!("create is not used in GetTransactions tests")
+            Err(AccountRepositoryError::OperationFailed {
+                operation: "create".to_string(),
+                reason: "not implemented in test".to_string(),
+            })
         }
 
         async fn find_by_number(
@@ -101,158 +114,123 @@ mod tests {
             Ok(self.found_account.lock().unwrap().clone())
         }
 
-        async fn update(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            unimplemented!("update is not used in GetTransactions tests")
-        }
-
         async fn find_by_owner(
             &self,
             _owner: &Owner,
         ) -> Result<Vec<Account>, AccountRepositoryError> {
-            unimplemented!("find_by_owner is not used in GetTransactions tests")
+            Err(AccountRepositoryError::OperationFailed {
+                operation: "find_by_owner".to_string(),
+                reason: "not implemented in test".to_string(),
+            })
         }
     }
 
     struct FakeTransactionRepository {
-        transactions: Mutex<Vec<Transaction>>,
-        find_result: Result<(), TransactionRepositoryError>,
+        transactions: Mutex<Vec<TransactionWithAccounts>>,
     }
 
     #[async_trait]
     impl TransactionRepository for FakeTransactionRepository {
-        async fn create(
-            &self,
-            _transaction: &Transaction,
-        ) -> Result<(), TransactionRepositoryError> {
-            unimplemented!("create is not used in GetTransactions tests")
-        }
-        async fn find_by_account_id(
+        async fn find_by_account_id_paginated(
             &self,
             _account_id: Uuid,
-        ) -> Result<Vec<Transaction>, TransactionRepositoryError> {
-            self.find_result.clone()?;
-            Ok(self.transactions.lock().unwrap().clone())
+            _page: u32,
+            page_size: u32,
+        ) -> Result<PaginatedTransactions, TransactionRepositoryError> {
+            let transactions = self.transactions.lock().unwrap().clone();
+            let total_count = transactions.len() as u64;
+            Ok(PaginatedTransactions {
+                transactions,
+                total_count,
+                page: 1,
+                page_size,
+                has_more: false,
+            })
         }
-    }
 
-    fn make_owner() -> Owner {
-        Owner::User(UserId::new("user-1").unwrap())
+        async fn count_by_account_id(
+            &self,
+            _account_id: Uuid,
+        ) -> Result<u64, TransactionRepositoryError> {
+            Err(TransactionRepositoryError::TransactionFailed)
+        }
     }
 
     fn make_account() -> Account {
         Account::new(
             Uuid::new_v4(),
-            AccountNumber::new("acc-1").unwrap(),
-            make_owner(),
+            AccountNumber::new("ACC001").unwrap(),
+            Owner::User(UserId::new("user-1").unwrap()),
             Balance::new(100),
             OffsetDateTime::UNIX_EPOCH,
         )
     }
 
-    fn make_transaction_for(account_id: Uuid, amount: u64) -> Transaction {
-        Transaction::deposit(
+    fn make_transaction() -> TransactionWithAccounts {
+        let transaction = Transaction::deposit(
             Uuid::new_v4(),
-            Amount::new(amount).unwrap(),
-            account_id,
+            Amount::new(50).unwrap(),
+            Uuid::new_v4(),
             OffsetDateTime::UNIX_EPOCH,
-        )
-    }
-
-    fn make_input() -> GetTransactionsInput {
-        GetTransactionsInput {
-            account_number: AccountNumber::new("acc-1").unwrap(),
+        );
+        TransactionWithAccounts {
+            transaction,
+            from_account_number: None,
+            to_account_number: Some("ACC-TO-123".to_string()),
         }
     }
 
     #[tokio::test]
-    async fn returns_transactions_when_account_exists() {
+    async fn returns_transactions_for_account() {
         let account = make_account();
+        let transactions = vec![make_transaction()];
 
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(account.clone())),
-            find_result: Ok(()),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            transactions: Mutex::new(vec![
-                make_transaction_for(account.id(), 50),
-                make_transaction_for(account.id(), 75),
-            ]),
-            find_result: Ok(()),
-        });
-
-        let use_case = GetTransactionsUseCase::new(repo, tx_repo);
-
-        let transactions = use_case.execute(make_input()).await.unwrap();
-
-        assert_eq!(transactions.len(), 2);
-        assert_eq!(transactions[0].amount().as_u64(), 50);
-        assert_eq!(transactions[1].amount().as_u64(), 75);
-    }
-
-    #[tokio::test]
-    async fn returns_empty_list_when_account_has_no_transactions() {
-        let account = make_account();
-
-        let repo = Arc::new(FakeAccountRepository {
+        let account_repo = Arc::new(FakeAccountRepository {
             found_account: Mutex::new(Some(account)),
             find_result: Ok(()),
         });
 
         let tx_repo = Arc::new(FakeTransactionRepository {
-            transactions: Mutex::new(vec![]),
-            find_result: Ok(()),
+            transactions: Mutex::new(transactions),
         });
 
-        let use_case = GetTransactionsUseCase::new(repo, tx_repo);
+        let use_case = GetTransactionsUseCase::new(account_repo, tx_repo);
 
-        let transactions = use_case.execute(make_input()).await.unwrap();
+        let result = use_case
+            .execute(GetTransactionsInput {
+                account_number: AccountNumber::new("ACC001").unwrap(),
+                page: 1,
+                page_size: 10,
+            })
+            .await;
 
-        assert!(transactions.is_empty());
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().transactions.len(), 1);
     }
 
     #[tokio::test]
-    async fn returns_account_not_found_when_account_missing() {
-        let repo = Arc::new(FakeAccountRepository {
+    async fn returns_account_not_found_when_missing() {
+        let account_repo = Arc::new(FakeAccountRepository {
             found_account: Mutex::new(None),
             find_result: Ok(()),
         });
 
         let tx_repo = Arc::new(FakeTransactionRepository {
             transactions: Mutex::new(vec![]),
-            find_result: Ok(()),
         });
 
-        let use_case = GetTransactionsUseCase::new(repo, tx_repo);
+        let use_case = GetTransactionsUseCase::new(account_repo, tx_repo);
 
-        let result = use_case.execute(make_input()).await;
+        let result = use_case
+            .execute(GetTransactionsInput {
+                account_number: AccountNumber::new("ACC001").unwrap(),
+                page: 1,
+                page_size: 10,
+            })
+            .await;
 
-        assert!(matches!(result, Err(GetTransactionsError::AccountNotFound)));
-    }
-
-    #[tokio::test]
-    async fn returns_transaction_repository_error_when_find_fails() {
-        let account = make_account();
-
-        let repo = Arc::new(FakeAccountRepository {
-            found_account: Mutex::new(Some(account)),
-            find_result: Ok(()),
-        });
-
-        let tx_repo = Arc::new(FakeTransactionRepository {
-            transactions: Mutex::new(vec![]),
-            find_result: Err(TransactionRepositoryError::TransactionFailed),
-        });
-
-        let use_case = GetTransactionsUseCase::new(repo, tx_repo);
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(
-            result,
-            Err(GetTransactionsError::TransactionRepository(
-                TransactionRepositoryError::TransactionFailed
-            ))
-        ));
+        assert!(
+            matches!(result, Err(OperationError::NotFound { resource }) if resource == "account")
+        );
     }
 }

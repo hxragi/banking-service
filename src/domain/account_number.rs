@@ -20,6 +20,7 @@ impl AccountNumber {
         Ok(Self(Self::validate(input)?.to_owned()))
     }
 
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -44,12 +45,6 @@ impl TryFrom<String> for AccountNumber {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         AccountNumber::new(&value)
-    }
-}
-
-impl AsRef<str> for AccountNumber {
-    fn as_ref(&self) -> &str {
-        self.as_str()
     }
 }
 

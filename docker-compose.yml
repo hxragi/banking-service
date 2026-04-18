@@ -1,11 +1,131 @@
 services:
   database:
-    image: postgres:18
+    image: postgres:18.3
+    container_name: bank-postgres
     ports:
       - "15432:5432"
+    env_file:
+      - .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-bank}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bank}
       POSTGRES_DB: ${POSTGRES_DB:-bank}
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
     volumes:
-      - ./.docker/postgres:/var/lib/postgresql
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bank} -d ${POSTGRES_DB:-bank}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  dragonfly:
+    image: docker.dragonflydb.io/dragonflydb/dragonfly:v1.37.0
+    container_name: bank-dragonfly
+    ports:
+      - "6379:6379"
+    ulimits:
+      memlock: -1
+    volumes:
+      - dragonfly_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.10
+    container_name: bank-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 1G
+      - --reserve-memory 0M
+      - --node-id 0
+      - --check=false
+      - --kafka-addr 0.0.0.0:9092
+      - --advertise-kafka-addr redpanda:9092
+      - --set redpanda.enable_auto_create_topics=true
+    ports:
+      - "9092:9092"
+      - "9644:9644"
+    healthcheck:
+      test: ["CMD", "rpk", "cluster", "info"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka-topic-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v25.3.10
+    container_name: bank-kafka-topic-init
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Creating Kafka topics..."
+        rpk topic create bank.transaction.created --brokers redpanda:9092 --replicas 1 --partitions 3 || true
+        rpk topic create gov.fine.created --brokers redpanda:9092 --replicas 1 --partitions 3 || true
+        rpk topic create market.order.paid --brokers redpanda:9092 --replicas 1 --partitions 3 || true
+        rpk topic create donate.topup --brokers redpanda:9092 --replicas 1 --partitions 3 || true
+        echo "Topics created successfully"
+        rpk topic list --brokers redpanda:9092
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v3.10.0
+    container_name: bank-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./.docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - bank-service
+
+  jaeger:
+    image: jaegertracing/jaeger:2.17.0
+    container_name: bank-jaeger
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  bank-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bank-service
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+      - "9091:9090"
+    env_file:
+      - .env
+    environment:
+      DATABASE__URL: postgresql://${POSTGRES_USER:-bank}:${POSTGRES_PASSWORD:-bank}@database:5432/${POSTGRES_DB:-bank}
+      SERVER__GRPC_HOST: 0.0.0.0
+      SERVER__HTTP_HOST: 0.0.0.0
+      KAFKA__BOOTSTRAP_SERVERS: redpanda:9092
+      DRAGONFLY__URL: redis://dragonfly:6379
+      TELEMETRY__OTEL_ENDPOINT: http://jaeger:4318/v1/traces
+    depends_on:
+      database:
+        condition: service_healthy
+      dragonfly:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  dragonfly_data:

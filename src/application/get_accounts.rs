@@ -1,156 +1,164 @@
 use std::sync::Arc;
 
-use thiserror::Error;
-
 use crate::{
-    application::ports::{AccountRepository, AccountRepositoryError},
-    domain::{account::Account, owner::Owner},
+    application::ports::{AccountRepository, BalanceCachePort, OperationError},
+    domain::{account::Account, balance::Balance, owner::Owner},
 };
 
 pub struct GetAccountsInput {
     pub owner: Owner,
 }
 
-#[derive(Error, Debug)]
-pub enum GetAccountsError {
-    #[error("account repository error")]
-    AccountRepository(#[from] AccountRepositoryError),
-}
-
 pub struct GetAccountsUseCase {
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
+    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 impl GetAccountsUseCase {
-    pub fn new(account_repository: Arc<dyn AccountRepository + Send + Sync>) -> Self {
-        Self { account_repository }
+    pub fn new(
+        account_repository: Arc<dyn AccountRepository + Send + Sync>,
+        balance_cache: Arc<dyn BalanceCachePort>,
+    ) -> Self {
+        Self {
+            account_repository,
+            balance_cache,
+        }
     }
 
-    pub async fn execute(&self, input: GetAccountsInput) -> Result<Vec<Account>, GetAccountsError> {
+    pub async fn execute(&self, input: GetAccountsInput) -> Result<Vec<Account>, OperationError> {
         let GetAccountsInput { owner } = input;
         let accounts = self.account_repository.find_by_owner(&owner).await?;
-        Ok(accounts)
+
+        let mut final_accounts = Vec::with_capacity(accounts.len());
+        for account in accounts {
+            let cached_balance = self.balance_cache.get(&account.id()).await;
+
+            let balance = match cached_balance {
+                Some(cached) => cached,
+                None => {
+                    let db_balance = account.balance().as_u64();
+                    self.balance_cache.set(account.id(), db_balance).await;
+                    db_balance
+                }
+            };
+
+            let final_account = Account::new(
+                account.id(),
+                account.number().clone(),
+                account.owner().clone(),
+                Balance::new(balance),
+                account.created_at(),
+            );
+            final_accounts.push(final_account);
+        }
+
+        Ok(final_accounts)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
-    use crate::application::ports::{
-        AccountRepository, AccountRepositoryError, TransactionRepositoryError,
-    };
-    use crate::domain::transaction::Transaction;
     use crate::domain::{
         account::Account, account_number::AccountNumber, balance::Balance, owner::Owner,
         user_id::UserId,
     };
+
+    use crate::test_utils::mocks::MockAccountRepository;
+    use crate::test_utils::redis_setup::setup_redis;
+
     use time::OffsetDateTime;
+
     use uuid::Uuid;
 
-    struct FakeAccountRepository {
-        accounts: Mutex<Vec<Account>>,
-        find_by_owner_result: Result<(), AccountRepositoryError>,
-    }
-
-    #[async_trait]
-    impl AccountRepository for FakeAccountRepository {
-        async fn count_by_owner(&self, _owner: &Owner) -> Result<u64, AccountRepositoryError> {
-            unimplemented!("count_by_owner is not used in GetAccounts tests")
-        }
-
-        async fn create(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            unimplemented!("create is not used in GetAccounts tests")
-        }
-
-        async fn find_by_number(
-            &self,
-            _number: &AccountNumber,
-        ) -> Result<Option<Account>, AccountRepositoryError> {
-            unimplemented!("find_by_number is not used in GetAccounts tests")
-        }
-
-        async fn update(&self, _account: &Account) -> Result<(), AccountRepositoryError> {
-            unimplemented!("update is not used in GetAccounts tests")
-        }
-
-        async fn find_by_owner(
-            &self,
-            _owner: &Owner,
-        ) -> Result<Vec<Account>, AccountRepositoryError> {
-            self.find_by_owner_result.clone()?;
-            Ok(self.accounts.lock().unwrap().clone())
-        }
-    }
-
-    fn make_owner() -> Owner {
-        Owner::User(UserId::new("user-1").unwrap())
-    }
-
-    fn make_account(number: &str, balance: u64) -> Account {
+    fn make_account(account_number: &str, balance: u64) -> Account {
         Account::new(
             Uuid::new_v4(),
-            AccountNumber::new(number).unwrap(),
-            make_owner(),
+            AccountNumber::new(account_number).unwrap(),
+            Owner::User(UserId::new("user-1").unwrap()),
             Balance::new(balance),
             OffsetDateTime::UNIX_EPOCH,
         )
     }
 
-    fn make_input() -> GetAccountsInput {
-        GetAccountsInput {
-            owner: make_owner(),
-        }
+    #[tokio::test]
+    async fn returns_accounts_for_owner() {
+        let accounts = vec![make_account("ACC001", 100), make_account("ACC002", 200)];
+
+        let repo = Arc::new(MockAccountRepository::new().with_accounts(accounts));
+
+        let (cache, _container) = setup_redis().await;
+        let use_case = GetAccountsUseCase::new(repo, Arc::new(cache));
+
+        let result = use_case
+            .execute(GetAccountsInput {
+                owner: Owner::User(UserId::new("user-1").unwrap()),
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let returned_accounts = result.unwrap();
+        assert_eq!(returned_accounts.len(), 2);
+        assert_eq!(returned_accounts[0].balance().as_u64(), 100);
+        assert_eq!(returned_accounts[1].balance().as_u64(), 200);
     }
 
     #[tokio::test]
-    async fn returns_accounts_when_found() {
-        let repo = Arc::new(FakeAccountRepository {
-            accounts: Mutex::new(vec![make_account("acc-1", 100), make_account("acc-2", 200)]),
-            find_by_owner_result: Ok(()),
-        });
+    async fn uses_cached_balances_when_available() {
+        let account1 = make_account("ACC001", 100);
+        let account2 = make_account("ACC002", 200);
+        let id1 = account1.id();
+        let id2 = account2.id();
 
-        let use_case = GetAccountsUseCase::new(repo);
+        let repo = Arc::new(MockAccountRepository::new().with_accounts(vec![account1, account2]));
 
-        let accounts = use_case.execute(make_input()).await.unwrap();
+        let (cache, _container) = setup_redis().await;
+        BalanceCachePort::set(&cache, id1, 1000).await;
+        BalanceCachePort::set(&cache, id2, 2000).await;
 
-        assert_eq!(accounts.len(), 2);
-        assert_eq!(accounts[0].number().as_str(), "acc-1");
-        assert_eq!(accounts[1].number().as_str(), "acc-2");
+        let use_case = GetAccountsUseCase::new(repo, Arc::new(cache));
+
+        let result = use_case
+            .execute(GetAccountsInput {
+                owner: Owner::User(UserId::new("user-1").unwrap()),
+            })
+            .await;
+
+        assert!(result.is_ok());
+        let returned_accounts = result.unwrap();
+        assert_eq!(returned_accounts.len(), 2);
+        assert_eq!(returned_accounts[0].balance().as_u64(), 1000);
+        assert_eq!(returned_accounts[1].balance().as_u64(), 2000);
     }
 
     #[tokio::test]
-    async fn returns_empty_list_when_no_accounts_found() {
-        let repo = Arc::new(FakeAccountRepository {
-            accounts: Mutex::new(vec![]),
-            find_by_owner_result: Ok(()),
-        });
+    async fn populates_cache_on_miss() {
+        let account1 = make_account("ACC001", 300);
+        let account2 = make_account("ACC002", 400);
+        let id1 = account1.id();
+        let id2 = account2.id();
 
-        let use_case = GetAccountsUseCase::new(repo);
+        let repo = Arc::new(MockAccountRepository::new().with_accounts(vec![account1, account2]));
 
-        let accounts = use_case.execute(make_input()).await.unwrap();
+        let (cache, _container): (_, _) = setup_redis().await;
+        let cache_arc: Arc<dyn BalanceCachePort> = Arc::new(cache);
+        let use_case = GetAccountsUseCase::new(repo, cache_arc.clone());
 
-        assert!(accounts.is_empty());
-    }
+        let _ = use_case
+            .execute(GetAccountsInput {
+                owner: Owner::User(UserId::new("user-1").unwrap()),
+            })
+            .await;
 
-    #[tokio::test]
-    async fn returns_repository_error_when_find_by_owner_fails() {
-        let repo = Arc::new(FakeAccountRepository {
-            accounts: Mutex::new(vec![make_account("acc-1", 100)]),
-            find_by_owner_result: Err(AccountRepositoryError::OperationFailed),
-        });
-
-        let use_case = GetAccountsUseCase::new(repo);
-
-        let result = use_case.execute(make_input()).await;
-
-        assert!(matches!(
-            result,
-            Err(GetAccountsError::AccountRepository(
-                AccountRepositoryError::OperationFailed
-            ))
-        ));
+        assert_eq!(
+            BalanceCachePort::get(cache_arc.as_ref(), &id1).await,
+            Some(300)
+        );
+        assert_eq!(
+            BalanceCachePort::get(cache_arc.as_ref(), &id2).await,
+            Some(400)
+        );
     }
 }

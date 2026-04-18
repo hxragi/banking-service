@@ -1,65 +1,380 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::{Router, routing::get};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::application::create_account::CreateAccountUseCase;
+use crate::application::{
+    change_tier::ChangeTierUseCase, create_account::CreateAccountUseCase, deposit::DepositUseCase,
+    get_account::GetAccountUseCase, get_accounts::GetAccountsUseCase,
+    get_transactions::GetTransactionsUseCase, ports::BalanceCachePort,
+    transaction_manager::TransactionManager, transfer::TransferUseCase, withdraw::WithdrawUseCase,
+};
 use crate::infrastructure::{
-    config::AppConfig,
-    database::create_pool,
-    generators::uuid_account_number_generator::UuidAccountNumberGenerator,
-    grpc::{bank, bank_service::BankGrpcService},
-    http,
+    config::config::AppConfig,
+    database::pool::create_with_config,
+    database::transaction::Manager,
+    generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
+    grpc::{
+        bank_service::{BankGrpcService, bank},
+        interceptor::InternalAuthInterceptor,
+    },
+    http::{accounts::AccountHttpHandler, router::create_router},
+    messaging::kafka_consumer::{
+        ConsumerCommand, DlqProducer, ExternalEventHandlerImpl, KafkaConsumerConfig, RetryTracker,
+        start_consumer_with_retry,
+    },
+    messaging::kafka_event_publisher::KafkaEventPublisher,
+    observability::{
+        health::{HealthChecker, health_check, readiness_check},
+        metrics::{create_metrics_router, setup_metrics},
+        sentry::init_sentry,
+        signal::shutdown_signal,
+        telemetry::init_telemetry,
+    },
     repositories::sqlx_account_repository::SqlxAccountRepository,
+    repositories::sqlx_idempotency_repository::SqlxIdempotencyRepository,
+    repositories::sqlx_owner_tier_repository::SqlxOwnerTierRepository,
+    repositories::sqlx_transaction_repository::SqlxTransactionRepository,
+    services::balance_cache::BalanceCache,
+    services::idempotency_service::IdempotencyService,
 };
 
 mod application;
 mod domain;
 mod infrastructure;
+mod test_utils;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    let config = AppConfig::from_env()?;
+
+    let tracer_provider = init_telemetry("bank-service", &config)?;
+    let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "bank-service");
+
+    let otlp_layer = tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_filter(EnvFilter::new("info"));
+
+    tracing_subscriber::registry()
+        .with(
+            otlp_layer.and_then(
+                tracing_subscriber::fmt::layer()
+                    .json()
+                    .with_current_span(true)
+                    .with_span_list(true),
+            ),
         )
-        .json()
-        .with_current_span(true)
-        .with_span_list(true)
+        .with(sentry_tracing::layer())
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     tracing::info!("starting service");
 
-    let config = AppConfig::from_env()?;
-    tracing::info!("config loaded");
+    let _sentry_guard = init_sentry(&config.sentry);
 
-    let pool = create_pool(&config.database_url).await?;
+    let metrics = setup_metrics()?;
+    let metrics_registry = metrics.registry.clone();
+
+    let pool = create_with_config(
+        &config.database.url,
+        config.database.max_connections,
+        config.database.connection_timeout_secs,
+        config.database.default_statement_timeout_secs,
+    )
+    .await?;
     tracing::info!("database connected");
 
-    let repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let generator = Arc::new(UuidAccountNumberGenerator);
+    sqlx::migrate!().run(&pool).await?;
+    tracing::info!("migrations applied");
 
-    let create_uc_grpc = CreateAccountUseCase::new(repo.clone(), generator.clone());
-    let grpc_service = BankGrpcService::new(Arc::new(create_uc_grpc));
-    let grpc_addr: std::net::SocketAddr = "[::1]:50051".parse()?;
+    let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
+    let generator = Arc::new(SequenceAccountNumberGenerator::new(
+        pool.clone(),
+        "ACC".to_string(),
+    ));
+
+    let db_tx_manager = Manager::new(pool.clone());
+
+    let transaction_repository = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+
+    let idempotency_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
+
+    let event_publisher = Arc::new(
+        KafkaEventPublisher::new(&config.kafka)
+            .map_err(|e| anyhow::anyhow!("Failed to create Kafka event publisher: {}", e))?,
+    );
+    tracing::info!("Kafka event publisher initialized");
+
+    let transaction_manager: Arc<TransactionManager> = Arc::new(TransactionManager::new(
+        db_tx_manager.clone(),
+        account_repo.clone(),
+        transaction_repository.clone(),
+        idempotency_repo.clone(),
+        Some(event_publisher),
+        Some(metrics.clone()),
+    ));
+
+    let balance_cache_ttl = Duration::from_secs(config.cache.balance_cache_ttl_secs);
+    let balance_cache = BalanceCache::new(
+        &config.dragonfly.url,
+        balance_cache_ttl,
+        Some(metrics.clone()),
+    )
+    .await?;
+
+    let owner_tier_repo = Arc::new(SqlxOwnerTierRepository::new(pool.clone()));
+
+    let create_account_use_case = Arc::new(CreateAccountUseCase::new(
+        account_repo.clone(),
+        generator.clone(),
+        owner_tier_repo.clone(),
+    ));
+
+    let balance_cache_arc: Arc<dyn BalanceCachePort> = Arc::new(balance_cache.clone());
+
+    let get_account_use_case = Arc::new(GetAccountUseCase::new(
+        account_repo.clone(),
+        balance_cache_arc.clone(),
+    ));
+    let get_accounts_use_case = Arc::new(GetAccountsUseCase::new(
+        account_repo.clone(),
+        balance_cache_arc.clone(),
+    ));
+    let get_transactions_use_case = Arc::new(GetTransactionsUseCase::new(
+        account_repo.clone(),
+        transaction_repository.clone(),
+    ));
+
+    let idempotency_ttl = Duration::from_secs(86400);
+    let idempotency_service = Arc::new(
+        IdempotencyService::new(
+            idempotency_repo.clone(),
+            &config.dragonfly.url,
+            idempotency_ttl,
+            Some(metrics.clone()),
+        )
+        .await?,
+    );
+
+    let grpc_service = BankGrpcService::new(
+        create_account_use_case.clone(),
+        get_account_use_case.clone(),
+        get_accounts_use_case.clone(),
+        Arc::new(DepositUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        Arc::new(WithdrawUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        Arc::new(TransferUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        get_transactions_use_case.clone(),
+        Arc::new(ChangeTierUseCase::new(
+            account_repo.clone(),
+            owner_tier_repo.clone(),
+        )),
+        idempotency_service.clone(),
+        metrics.clone(),
+    );
+    let grpc_addr: std::net::SocketAddr =
+        format!("{}:{}", config.server.grpc_host, config.server.grpc_port).parse()?;
+    let internal_auth_interceptor = InternalAuthInterceptor::new(config.internal_api_key.clone());
     let grpc_server = Server::builder()
-        .add_service(bank::bank_service_server::BankServiceServer::new(
-            grpc_service,
-        ))
-        .serve(grpc_addr);
+        .add_service(
+            bank::bank_service_server::BankServiceServer::with_interceptor(
+                grpc_service,
+                internal_auth_interceptor,
+            ),
+        )
+        .serve_with_shutdown(grpc_addr, shutdown_signal());
 
-    let create_uc_http = CreateAccountUseCase::new(repo.clone(), generator.clone());
-    let http_app = http::create_router(Arc::new(create_uc_http));
-    let http_addr: std::net::SocketAddr = "0.0.0.0:8080".parse()?;
+    let health_checker = Arc::new(HealthChecker::new(pool.clone()));
+
+    let http_handler = Arc::new(AccountHttpHandler::new(
+        create_account_use_case,
+        get_account_use_case.clone(),
+        get_accounts_use_case.clone(),
+        Arc::new(DepositUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        Arc::new(WithdrawUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        Arc::new(TransferUseCase::new(
+            transaction_manager.clone(),
+            balance_cache_arc.clone(),
+        )),
+        get_transactions_use_case.clone(),
+        idempotency_service.clone(),
+    ));
+
+    let http_app = create_router(http_handler).merge(
+        Router::new()
+            .route("/health", get(health_check))
+            .route("/ready", get(readiness_check))
+            .with_state(health_checker.clone()),
+    );
+
+    let http_addr: std::net::SocketAddr =
+        format!("{}:{}", config.server.http_host, config.server.http_port).parse()?;
     let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
-    let http_server = axum::serve(http_listener, http_app);
+    let http_server =
+        axum::serve(http_listener, http_app).with_graceful_shutdown(shutdown_signal());
 
     tracing::info!(grpc = %grpc_addr, http = %http_addr, "starting servers");
 
-    let grpc_fut = async { grpc_server.await.map_err(anyhow::Error::from) };
-    let http_fut = async { http_server.await.map_err(anyhow::Error::from) };
+    let consumer_config = KafkaConsumerConfig {
+        bootstrap_servers: config.kafka.bootstrap_servers.clone(),
+        group_id: "bank-service-external-events".to_string(),
+        topics: vec![
+            "gov.fine.created".to_string(),
+            "market.order.paid".to_string(),
+            "donate.topup".to_string(),
+        ],
+        session_timeout_ms: 10000,
+        auto_offset_reset: "earliest".to_string(),
+    };
 
-    tokio::try_join!(grpc_fut, http_fut)?;
+    let deposit_use_case = Arc::new(DepositUseCase::new(
+        transaction_manager.clone(),
+        balance_cache_arc.clone(),
+    ));
+    let withdraw_use_case = Arc::new(WithdrawUseCase::new(
+        transaction_manager.clone(),
+        balance_cache_arc.clone(),
+    ));
+
+    let event_handler = Arc::new(ExternalEventHandlerImpl::new(
+        deposit_use_case,
+        withdraw_use_case,
+        account_repo.clone(),
+    ));
+
+    let (consumer_shutdown_tx, consumer_shutdown_rx) = mpsc::channel(1);
+
+    let kafka_check_interval_secs = 30;
+    let consumer_shutdown_token = CancellationToken::new();
+
+    let retry_tracker = Arc::new(
+        RetryTracker::new(&config.dragonfly.url)
+            .await
+            .expect("Failed to create retry tracker"),
+    );
+    let dlq_producer = Arc::new(
+        DlqProducer::new(&config.kafka.bootstrap_servers).expect("Failed to create DLQ producer"),
+    );
+
+    let consumer_handle = match start_consumer_with_retry(
+        consumer_config,
+        event_handler,
+        consumer_shutdown_rx,
+        kafka_check_interval_secs,
+        retry_tracker,
+        dlq_producer,
+    )
+    .await
+    {
+        Ok(Some(handle)) => {
+            tracing::info!("Kafka consumer started immediately for external events");
+            Some(handle)
+        }
+        Ok(None) => {
+            tracing::warn!(
+                "Service started in DEGRADED MODE - Kafka unavailable. Consumer will start automatically when Kafka becomes available. External event processing is temporarily disabled."
+            );
+            let shutdown_token = consumer_shutdown_token.clone();
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+                        _ = shutdown_token.cancelled() => {
+                            tracing::info!("degraded mode retry loop cancelled, shutting down gracefully");
+                            break;
+                        }
+                    }
+                }
+            }))
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "Failed to initialize Kafka consumer retry mechanism. Continuing without external event processing."
+            );
+            None
+        }
+    };
+
+    let cleanup_pool = pool.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600));
+        let repo = SqlxIdempotencyRepository::new(cleanup_pool);
+        let batch_size = 1000i64;
+
+        loop {
+            interval.tick().await;
+            match repo.cleanup_expired_batched(batch_size).await {
+                Ok(deleted) => {
+                    if deleted > 0 {
+                        tracing::info!(
+                            rows_deleted = deleted,
+                            "cleaned up expired idempotency keys"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(err = ?e, "failed to cleanup expired idempotency keys");
+                }
+            }
+        }
+    });
+
+    let metrics_addr: std::net::SocketAddr = config.server.metrics_addr.parse()?;
+    let metrics_listener = tokio::net::TcpListener::bind(metrics_addr).await?;
+    let metrics_app = create_metrics_router(metrics_registry);
+    let metrics_server =
+        axum::serve(metrics_listener, metrics_app).with_graceful_shutdown(shutdown_signal());
+
+    tracing::info!(metrics = %metrics_addr, "metrics server started");
+
+    tokio::try_join!(
+        async { grpc_server.await.map_err(anyhow::Error::from) },
+        async { http_server.await.map_err(anyhow::Error::from) },
+        async { metrics_server.await.map_err(anyhow::Error::from) },
+    )?;
+
+    tracing::info!("http and grpc servers stopped, shutting down consumer");
+
+    if let Some(handle) = consumer_handle {
+        tracing::info!("sending shutdown command to kafka consumer");
+        if let Err(e) = consumer_shutdown_tx.send(ConsumerCommand::Shutdown).await {
+            tracing::warn!(error = %e, "failed to send shutdown command to consumer, it may already be stopped");
+        }
+
+        consumer_shutdown_token.cancel();
+
+        tracing::info!("waiting for kafka consumer to finish");
+        if let Err(e) = tokio::time::timeout(Duration::from_secs(30), handle).await {
+            tracing::warn!(error = %e, "consumer shutdown timed out or failed");
+        } else {
+            tracing::info!("kafka consumer stopped gracefully");
+        }
+    }
+
+    tracing::info!("service stopped");
+
+    if let Err(e) = tracer_provider.shutdown() {
+        tracing::warn!(error = ?e, "error shutting down tracer provider");
+    }
 
     Ok(())
 }

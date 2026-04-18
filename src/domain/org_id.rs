@@ -20,6 +20,7 @@ impl OrgId {
         Ok(Self(Self::validate(input)?.to_owned()))
     }
 
+    #[inline]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -39,18 +40,12 @@ impl TryFrom<&str> for OrgId {
     }
 }
 
-impl AsRef<str> for OrgId {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn creates_valid_user_id() {
+    fn creates_valid_org_id() {
         let acc = OrgId::new(" 12345 ").unwrap();
         assert_eq!(acc.as_str(), "12345");
     }
