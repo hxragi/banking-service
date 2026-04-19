@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use tonic::{Request, Status};
 
+#[derive(Clone)]
 pub struct InternalAuthInterceptor {
     internal_api_key: Arc<String>,
 }

@@ -18,11 +18,11 @@ use crate::infrastructure::{
     database::pool::create_with_config,
     database::transaction::Manager,
     generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
-    grpc::{
-        bank_service::{BankGrpcService, bank},
-        interceptor::InternalAuthInterceptor,
-    },
-    http::{accounts::AccountHttpHandler, router::create_router},
+};
+use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
+use crate::presentation::grpc::bank_service::bank;
+use crate::presentation::http::{handlers::AccountHttpHandler, router::create_router};
+use crate::infrastructure::{
     messaging::kafka_consumer::{
         ConsumerCommand, DlqProducer, ExternalEventHandlerImpl, KafkaConsumerConfig, RetryTracker,
         start_consumer_with_retry,
@@ -46,6 +46,7 @@ use crate::infrastructure::{
 mod application;
 mod domain;
 mod infrastructure;
+mod presentation;
 mod test_utils;
 
 #[tokio::main]

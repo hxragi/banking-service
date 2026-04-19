@@ -26,12 +26,10 @@ use crate::infrastructure::services::owner_extractor::{OwnerExtractionError, Own
 use super::interceptor::InternalRequestExt;
 use super::mappers::domain_to_proto_account;
 
-pub mod bank {
-    tonic_include_protos::include_protos!();
-}
+use crate::presentation::grpc::bank_service::bank::bank_service_server::BankService;
+use crate::presentation::grpc::bank_service::bank::*;
 
-use bank::bank_service_server::BankService;
-use bank::*;
+tonic_include_protos::include_protos!();
 
 fn map_extraction_error(err: OwnerExtractionError) -> Status {
     match err {
