@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::StatusCode,
-    Json,
 };
 
 use crate::application::{
@@ -21,7 +21,7 @@ use crate::domain::owner::Owner;
 use crate::domain::transaction_kind::TransactionKind;
 use crate::domain::user_id::UserId;
 use crate::infrastructure::services::idempotency_service::IdempotencyService;
-use crate::infrastructure::services::owner_extractor::{OwnerExtractor, OwnerExtractionError};
+use crate::infrastructure::services::owner_extractor::OwnerExtractor;
 
 use super::super::dto::requests::{
     CreateAccountBody, DepositBody, GetAccountsQuery, GetTransactionsQuery, TransferBody,
@@ -29,7 +29,7 @@ use super::super::dto::requests::{
 };
 use super::super::dto::responses::{
     AccountResponse, DepositResponse, GetAccountsResponse, GetTransactionsResponse,
-    OwnerResponse, TransactionResponse, TransferResponse, WithdrawResponse,
+    TransactionResponse, TransferResponse, WithdrawResponse,
 };
 use super::super::errors::HttpError;
 use super::super::mappers::domain_to_http_account;
