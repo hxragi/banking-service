@@ -19,7 +19,7 @@ use crate::application::{
     withdraw::{WithdrawInput, WithdrawUseCase},
 };
 use crate::domain::{account_number::AccountNumber, amount::Amount};
-use crate::infrastructure::messaging::external_events::{
+use crate::presentation::kafka::external_events::{
     DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent,
 };
 use crate::infrastructure::messaging::kafka_tracing::extract_trace_context;
