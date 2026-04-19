@@ -10,8 +10,9 @@ use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::Subscribe
 use crate::application::{
     change_tier::ChangeTierUseCase, create_account::CreateAccountUseCase, deposit::DepositUseCase,
     get_account::GetAccountUseCase, get_accounts::GetAccountsUseCase,
-    get_transactions::GetTransactionsUseCase, ports::BalanceCachePort,
-    transaction_manager::TransactionManager, transfer::TransferUseCase, withdraw::WithdrawUseCase,
+    get_transactions::GetTransactionsUseCase, ports::BalanceCachePort, ports::EventPublisher,
+    ports::MetricsPort, transaction_manager::TransactionManager, transfer::TransferUseCase,
+    withdraw::WithdrawUseCase,
 };
 use crate::infrastructure::{
     config::config::AppConfig,
@@ -36,9 +37,11 @@ use crate::infrastructure::{
         telemetry::init_telemetry,
     },
     repositories::sqlx_account_repository::SqlxAccountRepository,
+    repositories::sqlx_account_tx_repository::SqlxAccountTxRepository,
     repositories::sqlx_idempotency_repository::SqlxIdempotencyRepository,
     repositories::sqlx_owner_tier_repository::SqlxOwnerTierRepository,
     repositories::sqlx_transaction_repository::SqlxTransactionRepository,
+    repositories::sqlx_transaction_write_repository::SqlxTransactionWriteRepository,
     services::balance_cache::BalanceCache,
     services::idempotency_service::IdempotencyService,
 };
@@ -113,10 +116,11 @@ async fn main() -> anyhow::Result<()> {
     let transaction_manager: Arc<TransactionManager> = Arc::new(TransactionManager::new(
         db_tx_manager.clone(),
         account_repo.clone(),
-        transaction_repository.clone(),
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idempotency_repo.clone(),
-        Some(event_publisher),
-        Some(metrics.clone()),
+        Some(event_publisher as Arc<dyn EventPublisher>),
+        Some(metrics.clone() as Arc<dyn MetricsPort>),
     ));
 
     let balance_cache_ttl = Duration::from_secs(config.cache.balance_cache_ttl_secs);

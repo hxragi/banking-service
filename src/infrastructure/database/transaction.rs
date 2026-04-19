@@ -27,7 +27,7 @@ impl TransactionPort for Manager {
     }
 }
 
-impl crate::application::ports::Transaction for Transaction<'static, Postgres> {
+impl<'a> crate::application::ports::Transaction for Transaction<'a, Postgres> {
     async fn commit(self) -> Result<(), TransactionError> {
         sqlx::Transaction::commit(self)
             .await
