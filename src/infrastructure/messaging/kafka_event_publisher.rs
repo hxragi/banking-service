@@ -242,6 +242,38 @@ impl KafkaEventPublisher {
     }
 }
 
+use crate::application::ports::{EventPublisher as EventPublisherPort, EventPublishError as PortEventPublishError};
+use crate::domain::transaction_event::TransactionEvent;
+use crate::infrastructure::dto::transaction_event_dto::TransactionEventDto;
+
+#[async_trait::async_trait]
+impl EventPublisherPort for KafkaEventPublisher {
+    async fn publish(
+        &self,
+        topic: &str,
+        event: &TransactionEvent,
+    ) -> Result<(), PortEventPublishError> {
+        let domain_event_payload = TransactionEventDto::from(event.clone());
+        let payload_json = domain_event_payload.to_json().map_err(|e| {
+            PortEventPublishError::SerializationError(e.to_string())
+        })?;
+
+        let domain_event = DomainEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            event_type: "TransactionCreated".to_string(),
+            aggregate_id: event.transaction_id.to_string(),
+            aggregate_type: "transaction".to_string(),
+            payload: payload_json,
+            metadata: std::collections::HashMap::new(),
+        };
+
+        self.publish(topic, &domain_event).await.map_err(|e| match e {
+            EventPublishError::PublishFailed(msg) => PortEventPublishError::PublishFailed(msg),
+            EventPublishError::ConnectionError(msg) => PortEventPublishError::ConnectionError(msg),
+        })
+    }
+}
+
 impl Drop for KafkaEventPublisher {
     fn drop(&mut self) {
         tracing::info!("flushing Kafka producer on drop");
