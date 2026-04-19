@@ -13,7 +13,6 @@ use crate::application::{
     transfer::{TransferInput, TransferUseCase},
     withdraw::{WithdrawInput, WithdrawUseCase},
 };
-use crate::domain::account::Account;
 use crate::domain::account_number::AccountNumber;
 use crate::domain::amount::Amount;
 use crate::domain::owner::Owner;
