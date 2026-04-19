@@ -5,6 +5,7 @@ use uuid::Uuid;
 use crate::domain::account::Account;
 use crate::domain::account_number::AccountNumber;
 use crate::domain::owner::Owner;
+use crate::domain::transaction_event::TransactionEvent;
 
 #[derive(Debug, Clone)]
 pub struct TransactionWithAccounts {
@@ -147,6 +148,62 @@ pub trait BalanceCachePort: Send + Sync {
     async fn set(&self, account_id: Uuid, balance: u64);
     #[must_use = "cache operations can fail silently if ignored"]
     async fn invalidate(&self, account_id: &Uuid);
+}
+
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum EventPublishError {
+    #[error("publish failed: {0}")]
+    PublishFailed(String),
+    #[error("connection error: {0}")]
+    ConnectionError(String),
+    #[error("serialization error: {0}")]
+    SerializationError(String),
+}
+
+#[async_trait]
+pub trait AccountTxRepository<Tx>: Send + Sync {
+    async fn find_by_number_for_update(
+        &self,
+        tx: &mut Tx,
+        account_number: &str,
+    ) -> Result<Option<Account>, AccountRepositoryError>;
+
+    async fn update_balance(
+        &self,
+        tx: &mut Tx,
+        account_id: Uuid,
+        balance: u64,
+    ) -> Result<(), AccountRepositoryError>;
+
+    async fn lock_for_update_by_numbers(
+        &self,
+        tx: &mut Tx,
+        first_number: &str,
+        second_number: &str,
+    ) -> Result<Vec<Account>, AccountRepositoryError>;
+}
+
+#[async_trait]
+pub trait TransactionWriteRepository<Tx>: Send + Sync {
+    async fn create(
+        &self,
+        tx: &mut Tx,
+        transaction: &crate::domain::transaction::Transaction,
+    ) -> Result<(), TransactionRepositoryError>;
+}
+
+#[async_trait]
+pub trait EventPublisher: Send + Sync {
+    async fn publish(
+        &self,
+        topic: &str,
+        event: &TransactionEvent,
+    ) -> Result<(), EventPublishError>;
+}
+
+pub trait MetricsPort: Send + Sync {
+    fn increment_operation(&self, operation: &str, status: &str);
+    fn record_error(&self, error_type: &str, operation: &str);
 }
 
 pub trait TransactionPort: Send + Sync + Clone {
