@@ -996,4 +996,205 @@ mod tests {
             "account unavailable"
         );
     }
+
+    use std::sync::Arc;
+
+    use crate::test_utils::fakes::{
+        FakeTransactionPort, InMemoryAccountTxRepository, InMemoryTransactionWriteRepository,
+    };
+    use crate::application::ports::IdempotencyTxRepository;
+    use super::FinancialTransactionManager;
+
+    struct FakeIdempotencyTxRepository;
+
+    #[async_trait::async_trait]
+    impl IdempotencyTxRepository<()> for FakeIdempotencyTxRepository {
+        async fn save_in_tx(
+            &self,
+            _key: &str,
+            _response: &str,
+            _tx: &mut (),
+        ) -> Result<(), IdempotencyError> {
+            Ok(())
+        }
+    }
+
+    fn setup_manager(
+        account_tx_repo: Arc<InMemoryAccountTxRepository>,
+    ) -> FinancialTransactionManager<FakeTransactionPort, ()> {
+        let account_repo = crate::test_utils::mocks::MockAccountRepository::new();
+        let tx_write_repo = Arc::new(InMemoryTransactionWriteRepository::new());
+        let idem_repo = Arc::new(FakeIdempotencyTxRepository);
+        FinancialTransactionManager::new(
+            FakeTransactionPort,
+            Arc::new(account_repo),
+            account_tx_repo,
+            tx_write_repo,
+            idem_repo,
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_deposit_updates_balance() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo.clone());
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Deposit(acc, _tx) => {
+                assert_eq!(acc.balance().as_u64(), 700);
+            }
+            _ => panic!("expected deposit output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deposit_account_not_found() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let manager = setup_manager(account_tx_repo);
+
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("MISSING").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::AccountNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_success() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Withdraw(WithdrawInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Withdraw(acc, _tx) => {
+                assert_eq!(acc.balance().as_u64(), 300);
+            }
+            _ => panic!("expected withdraw output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_insufficient_funds() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 100);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Withdraw(WithdrawInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::InsufficientFunds)));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_success() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let from = create_test_account("ACC001", 1000);
+        let to = create_test_account("ACC002", 500);
+        account_tx_repo.insert_account(from.clone()).await;
+        account_tx_repo.insert_account(to.clone()).await;
+
+        let manager = setup_manager(account_tx_repo.clone());
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("ACC002").unwrap(),
+                    amount: Amount::new(300).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Transfer(transfer_result, _tx) => {
+                assert_eq!(transfer_result.from_account.balance().as_u64(), 700);
+                assert_eq!(transfer_result.to_account.balance().as_u64(), 800);
+            }
+            _ => panic!("expected transfer output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transfer_same_account() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 1000);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::SameAccountTransfer)));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_to_account_not_found() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 1000);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("MISSING").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::ToAccountNotFound)));
+    }
 }
