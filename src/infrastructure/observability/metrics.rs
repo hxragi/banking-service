@@ -101,3 +101,19 @@ pub fn create_metrics_router(registry: Registry) -> Router {
         }),
     )
 }
+
+use crate::application::ports::MetricsPort;
+
+impl MetricsPort for Metrics {
+    fn increment_operation(&self, operation: &str, status: &str) {
+        self.operations_total
+            .with_label_values(&[operation, status])
+            .inc();
+    }
+
+    fn record_error(&self, error_type: &str, operation: &str) {
+        self.errors_total
+            .with_label_values(&[error_type, operation])
+            .inc();
+    }
+}
