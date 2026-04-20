@@ -6,7 +6,7 @@ use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
     consumer::{Consumer, StreamConsumer},
-    message::BorrowedMessage,
+    message::{BorrowedMessage, Headers},
     producer::{FutureProducer, Producer},
 };
 use tokio::sync::mpsc;
@@ -505,7 +505,9 @@ impl KafkaEventConsumer {
                                     Ok(())
                                 }
                                 Err(error_reason) => {
-                                    let retry_count = retry_tracker.get_retry_count(&topic, partition, offset).await;
+                                    let redis_retry_count = retry_tracker.get_retry_count(&topic, partition, offset).await;
+                                    let header_retry_count = get_retry_count_from_message(&msg);
+                                    let retry_count = redis_retry_count.max(header_retry_count);
 
                                     if retry_count >= MAX_RETRIES {
                                         tracing::warn!(topic, partition, offset, retry_count, "Max retries exceeded, sending to DLQ");
@@ -796,6 +798,30 @@ pub async fn start_consumer_with_retry(
     Ok(Some(retry_handle))
 }
 
+fn extract_retry_count_from_header_value(value: Option<&[u8]>) -> u32 {
+    match value {
+        Some(bytes) => {
+            let s = std::str::from_utf8(bytes).ok();
+            s.and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0)
+        }
+        None => 0,
+    }
+}
+
+fn get_retry_count_from_message(msg: &BorrowedMessage<'_>) -> u32 {
+    let mut max_count: u32 = 0;
+    if let Some(headers) = msg.headers() {
+        for header in headers.iter() {
+            if header.key == "x-retry-count" {
+                let count = extract_retry_count_from_header_value(header.value);
+                max_count = max_count.max(count);
+            }
+        }
+    }
+    max_count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,6 +968,33 @@ mod tests {
             result.unwrap_err(),
             ExternalEventError::AccountNotFound { .. }
         ));
+    }
+
+    #[test]
+    fn extract_retry_count_from_headers_returns_zero_when_absent() {
+        let count = extract_retry_count_from_header_value(None);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn extract_retry_count_from_headers_parses_valid_value() {
+        let count = extract_retry_count_from_header_value(Some(b"3".as_slice()));
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn extract_retry_count_from_headers_returns_zero_for_invalid() {
+        let count = extract_retry_count_from_header_value(Some(b"abc".as_slice()));
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn max_of_redis_and_header_used() {
+        let redis_count: u32 = 2;
+        let header_count: u32 = 3;
+        assert_eq!(redis_count.max(header_count), 3);
+        assert_eq!(redis_count.max(0), 2);
+        assert_eq!(0.max(header_count), 3);
     }
 
     #[test]
