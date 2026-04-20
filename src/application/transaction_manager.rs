@@ -87,6 +87,16 @@ pub enum TransactionOperation {
     Transfer(TransferInput),
 }
 
+impl TransactionOperation {
+    pub fn operation_type(&self) -> &'static str {
+        match self {
+            TransactionOperation::Deposit(_) => "deposit",
+            TransactionOperation::Withdraw(_) => "withdraw",
+            TransactionOperation::Transfer(_) => "transfer",
+        }
+    }
+}
+
 #[derive(Error, Debug, Clone)]
 pub enum TransactionError {
     #[error("account not found")]
@@ -252,7 +262,7 @@ where
                 let transaction = output.transaction().clone();
                 self.publish_transaction_event(transaction);
 
-                tracing::info!(operation = ?operation, "transaction completed successfully");
+                tracing::info!(operation_type = %operation.operation_type(), "transaction completed successfully");
                 Ok(output)
             }
             Err(e) => {
