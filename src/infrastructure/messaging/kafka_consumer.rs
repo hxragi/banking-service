@@ -12,6 +12,7 @@ use rdkafka::{
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use base64::Engine;
 
 use crate::application::{
     deposit::{DepositInput, DepositUseCase},
@@ -19,10 +20,10 @@ use crate::application::{
     withdraw::{WithdrawInput, WithdrawUseCase},
 };
 use crate::domain::{account_number::AccountNumber, amount::Amount};
-use crate::infrastructure::messaging::external_events::{
+use crate::infrastructure::messaging::kafka_tracing::extract_trace_context;
+use crate::presentation::kafka::external_events::{
     DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent,
 };
-use crate::infrastructure::messaging::kafka_tracing::extract_trace_context;
 
 const MAX_RETRIES: u32 = 3;
 const DLQ_TOPIC: &str = "bank.transaction.dlq";
@@ -124,7 +125,13 @@ impl DlqProducer {
             "offset": offset,
             "retry_count": retry_count,
             "error_reason": error_reason,
-            "payload": std::str::from_utf8(payload).unwrap_or("<binary>"),
+            "payload": match std::str::from_utf8(payload) {
+                Ok(s) => serde_json::Value::String(s.to_string()),
+                Err(_) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(payload);
+                    serde_json::json!({"base64": encoded})
+                }
+            },
             "timestamp": timestamp,
         });
 
@@ -802,8 +809,7 @@ fn extract_retry_count_from_header_value(value: Option<&[u8]>) -> u32 {
     match value {
         Some(bytes) => {
             let s = std::str::from_utf8(bytes).ok();
-            s.and_then(|s| s.parse::<u32>().ok())
-                .unwrap_or(0)
+            s.and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
         }
         None => 0,
     }
@@ -825,6 +831,7 @@ fn get_retry_count_from_message(msg: &BorrowedMessage<'_>) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use std::sync::{Arc, Mutex};
 
     struct MockEventHandler {
@@ -995,6 +1002,26 @@ mod tests {
         assert_eq!(redis_count.max(header_count), 3);
         assert_eq!(redis_count.max(0), 2);
         assert_eq!(0.max(header_count), 3);
+    }
+
+    #[test]
+    fn non_utf8_payload_uses_base64_in_dlq_message() {
+        let non_utf8: Vec<u8> = vec![0x80, 0x90, 0xa0];
+        let json = serde_json::json!({
+            "payload": match std::str::from_utf8(&non_utf8) {
+                Ok(s) => serde_json::Value::String(s.to_string()),
+                Err(_) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(&non_utf8);
+                    serde_json::json!({"base64": encoded})
+                }
+            }
+        });
+        let payload_obj = json.get("payload").unwrap();
+        assert!(payload_obj.get("base64").is_some());
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(payload_obj.get("base64").unwrap().as_str().unwrap())
+            .unwrap();
+        assert_eq!(decoded, non_utf8);
     }
 
     #[test]

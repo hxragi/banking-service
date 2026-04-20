@@ -37,6 +37,7 @@ sentry = { version = "0.37", features = ["tracing"], default-features = false }
 sentry-tracing = { version = "0.37", default-features = false }
 redis = { version = "0.29", features = ["tokio-comp"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["postgres", "redis"] }
 
