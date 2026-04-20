@@ -175,16 +175,6 @@ fn default_otel_timeout_secs() -> u64 {
 }
 
 impl AppConfig {
-    pub fn validate(&self) -> anyhow::Result<()> {
-        if self.internal_api_key == "default-insecure-change-me" {
-            tracing::warn!(
-                "INTERNAL_API_KEY is using the default insecure value. \
-                 Set INTERNAL_API_KEY environment variable in production."
-            );
-        }
-        Ok(())
-    }
-
     pub fn from_env() -> anyhow::Result<AppConfig> {
         match dotenvy::dotenv() {
             Ok(_) => {}
@@ -243,18 +233,6 @@ mod tests {
             telemetry: TelemetryConfig::default(),
             internal_api_key: internal_api_key.to_string(),
         }
-    }
-
-    #[test]
-    fn validate_warns_on_insecure_key() {
-        let config = test_config("default-insecure-change-me");
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn validate_ok_on_secure_key() {
-        let config = test_config("my-secret-key");
-        assert!(config.validate().is_ok());
     }
 
     #[test]

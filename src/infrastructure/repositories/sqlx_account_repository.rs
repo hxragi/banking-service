@@ -1,76 +1,21 @@
-use sqlx::{PgPool, Row, postgres::PgRow};
-use thiserror::Error;
-use time::OffsetDateTime;
-use uuid::Uuid;
+use sqlx::PgPool;
 
 use crate::{
     application::ports::{AccountRepository, AccountRepositoryError},
     domain::{
-        account::Account, account_number::AccountNumber, balance::Balance, errors::DomainError,
-        org_id::OrgId, owner::Owner, user_id::UserId,
+        account::Account, account_number::AccountNumber,
+        owner::Owner,
     },
-    infrastructure::database::error::classify,
+    infrastructure::database::{error::classify, row_mapping::row_to_account},
 };
 
 pub struct SqlxAccountRepository {
     pool: PgPool,
 }
 
-#[derive(Debug, Error)]
-pub enum SqlxAccountRepositoryError {
-    #[error("account conversion error: {0}")]
-    AccountConversionError(#[from] DomainError),
-    #[error("failed to identify owner")]
-    FailedIdentifyOwner,
-    #[error("invalid balance data")]
-    InvalidBalanceData,
-    #[error("database error: {0}")]
-    DatabaseError(#[from] sqlx::Error),
-}
-
 impl SqlxAccountRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
-    }
-
-    fn row_to_account(&self, row: &PgRow) -> Result<Account, SqlxAccountRepositoryError> {
-        let id: Uuid = row
-            .try_get("id")
-            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
-        let number: String = row
-            .try_get("number")
-            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
-        let user_id: Option<String> = row
-            .try_get("user_id")
-            .map_err(|_| SqlxAccountRepositoryError::FailedIdentifyOwner)?;
-        let org_id: Option<String> = row
-            .try_get("org_id")
-            .map_err(|_| SqlxAccountRepositoryError::FailedIdentifyOwner)?;
-        let balance: i64 = row
-            .try_get("balance")
-            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
-        let created_at: OffsetDateTime = row
-            .try_get("created_at")
-            .map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
-
-        let owner = match (user_id, org_id) {
-            (Some(user_id), None) => Owner::User(UserId::new(&user_id)?),
-            (None, Some(org_id)) => Owner::Org(OrgId::new(&org_id)?),
-            _ => return Err(SqlxAccountRepositoryError::FailedIdentifyOwner),
-        };
-
-        let balance =
-            u64::try_from(balance).map_err(|_| SqlxAccountRepositoryError::InvalidBalanceData)?;
-
-        let account = Account::new(
-            id,
-            AccountNumber::new(&number)?,
-            owner,
-            Balance::new(balance),
-            created_at,
-        );
-
-        Ok(account)
     }
 }
 
@@ -100,15 +45,13 @@ impl AccountRepository for SqlxAccountRepository {
         })?;
 
         match row {
-            Some(row) => self.row_to_account(&row)
-                .map_err(|e| {
+            Some(row) => {
+                let account = row_to_account(&row).map_err(|e| {
                     tracing::error!(err = %e, account_number = %number, "failed to convert account row");
-                    AccountRepositoryError::OperationFailed {
-                        operation: "row_conversion".to_string(),
-                        reason: e.to_string(),
-                    }
-                })
-                .map(Some),
+                    e
+                })?;
+                Ok(Some(account))
+            }
             None => Ok(None),
         }
     }
@@ -232,14 +175,11 @@ impl AccountRepository for SqlxAccountRepository {
 
         let accounts: Vec<Account> = rows
             .iter()
-            .map(|row| self.row_to_account(row))
+            .map(|row| row_to_account(row))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 tracing::error!(err = %e, "failed to convert account row");
-                AccountRepositoryError::OperationFailed {
-                    operation: "row_conversion".to_string(),
-                    reason: e.to_string(),
-                }
+                e
             })?;
 
         Ok(accounts)

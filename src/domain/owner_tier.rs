@@ -29,11 +29,6 @@ impl OwnerTier {
     pub fn tier(&self) -> Tier {
         self.tier
     }
-
-    #[allow(dead_code)]
-    pub fn account_limit(&self) -> u64 {
-        self.tier.account_limit().unwrap_or(u64::MAX)
-    }
 }
 
 #[cfg(test)]

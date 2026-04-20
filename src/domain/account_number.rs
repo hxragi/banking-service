@@ -10,14 +10,14 @@ impl AccountNumber {
         let trimmed = input.trim();
 
         if trimmed.is_empty() {
-            Err(DomainError::InvalidAccountNumber)
-        } else {
-            Ok(trimmed)
+            return Err(DomainError::InvalidAccountNumber);
         }
+
+        Ok(trimmed)
     }
 
     pub fn new(input: &str) -> Result<Self, DomainError> {
-        Ok(Self(Self::validate(input)?.to_owned()))
+        Self::validate(input).map(|s| Self(s.to_owned()))
     }
 
     #[inline]

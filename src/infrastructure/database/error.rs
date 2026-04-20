@@ -29,7 +29,9 @@ pub fn map_sqlx_to_account_error(err: sqlx::Error) -> AccountRepositoryError {
     match &err {
         sqlx::Error::Database(db_err) => match db_err.code().as_deref() {
             Some("23505") => AccountRepositoryError::UniqueConstraintViolation(db_err.message().to_string()),
-            Some("40P01") | Some("40001") | Some("57014") => AccountRepositoryError::LockTimeout,
+            Some("40P01") => AccountRepositoryError::Deadlock,
+            Some("40001") => AccountRepositoryError::SerializationFailure,
+            Some("57014") => AccountRepositoryError::LockTimeout,
             Some("08006") | Some("08001") | Some("08004") => AccountRepositoryError::ConnectionError(db_err.message().to_string()),
             _ => AccountRepositoryError::OperationFailed {
                 operation: "database".to_string(),
@@ -50,7 +52,9 @@ pub fn map_sqlx_to_transaction_error(err: sqlx::Error) -> TransactionRepositoryE
         sqlx::Error::Database(db_err) => match db_err.code().as_deref() {
             Some("23505") => TransactionRepositoryError::UniqueConstraintViolation(db_err.message().to_string()),
             Some("23514") => TransactionRepositoryError::CheckConstraintViolation(db_err.message().to_string()),
-            Some("40P01") | Some("40001") | Some("57014") => TransactionRepositoryError::LockTimeout,
+            Some("40P01") => TransactionRepositoryError::Deadlock,
+            Some("40001") => TransactionRepositoryError::SerializationFailure,
+            Some("57014") => TransactionRepositoryError::LockTimeout,
             Some("08006") | Some("08001") | Some("08004") => TransactionRepositoryError::ConnectionError(db_err.message().to_string()),
             _ => TransactionRepositoryError::TransactionFailed,
         },
