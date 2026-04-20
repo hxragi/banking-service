@@ -11,6 +11,8 @@ impl OrgId {
 
         if trimmed.is_empty() {
             Err(DomainError::InvalidOrgId)
+        } else if trimmed.len() > 256 {
+            Err(DomainError::InvalidOrgId)
         } else {
             Ok(trimmed)
         }
@@ -72,5 +74,11 @@ mod tests {
     fn display_outputs_inner_value() {
         let acc = OrgId::new("123").unwrap();
         assert_eq!(format!("{}", acc), "123");
+    }
+
+    #[test]
+    fn org_id_rejects_too_long() {
+        let long_id = "x".repeat(300);
+        assert!(OrgId::new(&long_id).is_err());
     }
 }

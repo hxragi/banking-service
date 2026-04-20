@@ -11,6 +11,8 @@ impl UserId {
 
         if trimmed.is_empty() {
             Err(DomainError::InvalidUserId)
+        } else if trimmed.len() > 256 {
+            Err(DomainError::InvalidUserId)
         } else {
             Ok(trimmed)
         }
@@ -78,5 +80,11 @@ mod tests {
     fn display_outputs_inner_value() {
         let acc = UserId::new("123").unwrap();
         assert_eq!(format!("{}", acc), "123");
+    }
+
+    #[test]
+    fn user_id_rejects_too_long() {
+        let long_id = "x".repeat(300);
+        assert!(UserId::new(&long_id).is_err());
     }
 }
