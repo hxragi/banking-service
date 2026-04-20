@@ -179,8 +179,7 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<CreateAccountResponse>, Status> {
         let is_internal = request.is_internal();
         let req = request.into_inner();
-        let owner = parse_owner(req.owner, is_internal)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let owner = parse_owner(req.owner, is_internal)?;
 
         let input = CreateAccountInput { owner };
         let result = self.create_account_use_case.execute(input).await;
@@ -233,8 +232,7 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<GetAccountsResponse>, Status> {
         let is_internal = request.is_internal();
         let req = request.into_inner();
-        let owner = parse_get_accounts_owner(req.owner, is_internal)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let owner = parse_get_accounts_owner(req.owner, is_internal)?;
 
         let input = GetAccountsInput { owner };
         let result = self.get_accounts_use_case.execute(input).await;
@@ -520,8 +518,7 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<ChangeTierResponse>, Status> {
         let is_internal = request.is_internal();
         let req = request.into_inner();
-        let owner = parse_change_tier_owner(req.owner, is_internal)
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        let owner = parse_change_tier_owner(req.owner, is_internal)?;
         let new_tier =
             parse_tier(req.new_tier).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
