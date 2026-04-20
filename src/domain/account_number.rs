@@ -93,4 +93,20 @@ mod tests {
         let acc = AccountNumber::new("123").unwrap();
         assert_eq!(format!("{}", acc), "123");
     }
+
+    #[test]
+    fn account_number_accepts_valid_format() {
+        assert!(AccountNumber::new("ACC-001").is_ok());
+    }
+
+    #[test]
+    fn account_number_accepts_special_characters() {
+        assert!(AccountNumber::new("ACC@#$001!").is_ok());
+    }
+
+    #[test]
+    fn account_number_accepts_long_string() {
+        let long = "a".repeat(1000);
+        assert!(AccountNumber::new(&long).is_ok());
+    }
 }
