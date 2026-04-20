@@ -15,12 +15,18 @@ impl TransactionKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown transaction kind")]
 pub struct ParseTransactionKindError;
 
-impl std::fmt::Display for ParseTransactionKindError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown transaction kind")
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_error_display_message() {
+        let err = ParseTransactionKindError;
+        assert_eq!(format!("{}", err), "unknown transaction kind");
     }
 }
 
