@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bank_service::{
     application::{
         deposit::{DepositInput, DepositUseCase},
-        ports::{BalanceCachePort, EventPublisher, MetricsPort},
+        ports::{BalanceCachePort, MetricsPort},
         transaction_manager::TransactionManager,
         transfer::{TransferInput, TransferUseCase},
         withdraw::{WithdrawInput, WithdrawUseCase},
@@ -34,7 +34,7 @@ async fn test_concurrent_deposits() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -109,7 +109,7 @@ async fn test_concurrent_withdrawals() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -179,7 +179,7 @@ async fn test_concurrent_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -262,7 +262,7 @@ async fn test_idempotency_duplicate_requests() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -329,7 +329,7 @@ async fn test_deadlock_opposite_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -416,7 +416,7 @@ async fn test_concurrent_idempotent_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -497,7 +497,7 @@ async fn test_concurrent_mixed_operations() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
