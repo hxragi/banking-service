@@ -1046,6 +1046,24 @@ mod tests {
         }
     }
 
+    struct ConflictIdempotencyTxRepository {
+        cached_response: String,
+    }
+
+    #[async_trait::async_trait]
+    impl IdempotencyTxRepository<()> for ConflictIdempotencyTxRepository {
+        async fn save_in_tx(
+            &self,
+            _key: &str,
+            response: &str,
+            _tx: &mut (),
+        ) -> Result<(), IdempotencyError> {
+            Err(IdempotencyError::KeyAlreadyExists {
+                response: self.cached_response.clone(),
+            })
+        }
+    }
+
     fn setup_manager(
         account_tx_repo: Arc<InMemoryAccountTxRepository>,
     ) -> FinancialTransactionManager<FakeTransactionPort, ()> {
@@ -1223,5 +1241,47 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(TransactionError::ToAccountNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_deposit_idempotency_cache_hit_returns_account() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let account_repo = crate::test_utils::mocks::MockAccountRepository::new()
+            .with_account(account.clone());
+        let tx_write_repo = Arc::new(InMemoryTransactionWriteRepository::new());
+        let idem_repo = Arc::new(ConflictIdempotencyTxRepository {
+            cached_response: account.id().to_string(),
+        });
+
+        let manager = FinancialTransactionManager::new(
+            FakeTransactionPort,
+            Arc::new(account_repo),
+            account_tx_repo,
+            tx_write_repo,
+            idem_repo,
+            None,
+            None,
+        );
+
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                Some("idem-key-1".to_string()),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        match result.unwrap() {
+            TransactionOutput::Deposit(acc, _tx) => {
+                assert_eq!(acc.number().as_str(), "ACC001");
+            }
+            _ => panic!("expected deposit output"),
+        }
     }
 }
