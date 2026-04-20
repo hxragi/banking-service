@@ -51,7 +51,6 @@ pub enum OwnerTierRepositoryError {
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TransactionRepositoryError {
     #[error("transaction failed")]
     TransactionFailed,
