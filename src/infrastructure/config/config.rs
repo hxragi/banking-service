@@ -98,15 +98,7 @@ pub struct AppConfig {
     pub sentry: Option<SentryConfig>,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
-    #[serde(default = "default_internal_api_key")]
     pub internal_api_key: String,
-}
-
-fn default_internal_api_key() -> String {
-    std::env::var("INTERNAL_API_KEY").unwrap_or_else(|_| {
-        tracing::warn!("INTERNAL_API_KEY not set, using default insecure key");
-        "default-insecure-change-me".to_string()
-    })
 }
 
 fn default_max_connections() -> u32 {
@@ -233,13 +225,6 @@ mod tests {
             telemetry: TelemetryConfig::default(),
             internal_api_key: internal_api_key.to_string(),
         }
-    }
-
-    #[test]
-    fn default_internal_api_key_is_insecure() {
-        unsafe { std::env::remove_var("INTERNAL_API_KEY") };
-        let key = default_internal_api_key();
-        assert_eq!(key, "default-insecure-change-me");
     }
 
     #[test]
