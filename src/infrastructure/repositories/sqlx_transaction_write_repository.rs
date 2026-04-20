@@ -9,7 +9,9 @@ use crate::{
 pub struct SqlxTransactionWriteRepository;
 
 #[async_trait::async_trait]
-impl TransactionWriteRepository<SqlxTransaction<'static, Postgres>> for SqlxTransactionWriteRepository {
+impl TransactionWriteRepository<SqlxTransaction<'static, Postgres>>
+    for SqlxTransactionWriteRepository
+{
     async fn create(
         &self,
         tx: &mut SqlxTransaction<'static, Postgres>,

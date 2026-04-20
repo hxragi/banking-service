@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use base64::Engine;
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
@@ -12,7 +13,6 @@ use rdkafka::{
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use base64::Engine;
 
 use crate::application::{
     deposit::{DepositInput, DepositUseCase},
@@ -257,9 +257,8 @@ impl ExternalEventHandlerImpl {
         user_id: &str,
     ) -> Result<AccountNumber, ExternalEventError> {
         if let Some(account_number) = explicit_account {
-            AccountNumber::new(account_number).map_err(|_| ExternalEventError::InvalidAccountFormat(
-                account_number.to_string(),
-            ))
+            AccountNumber::new(account_number)
+                .map_err(|_| ExternalEventError::InvalidAccountFormat(account_number.to_string()))
         } else {
             self.find_account_by_user_id(user_id).await
         }

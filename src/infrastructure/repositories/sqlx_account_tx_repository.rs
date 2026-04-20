@@ -2,9 +2,12 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use crate::{
-    application::ports::{AccountTxRepository, AccountRepositoryError},
+    application::ports::{AccountRepositoryError, AccountTxRepository},
     domain::account::Account,
-    infrastructure::database::{error::{classify, map_sqlx_to_account_error}, row_mapping::row_to_account},
+    infrastructure::database::{
+        error::{classify, map_sqlx_to_account_error},
+        row_mapping::row_to_account,
+    },
 };
 
 pub struct SqlxAccountTxRepository;
@@ -36,10 +39,11 @@ impl AccountTxRepository<Transaction<'static, Postgres>> for SqlxAccountTxReposi
         account_id: Uuid,
         balance: u64,
     ) -> Result<(), AccountRepositoryError> {
-        let balance_i64 = i64::try_from(balance).map_err(|_| AccountRepositoryError::OperationFailed {
-            operation: "update_balance".to_string(),
-            reason: "balance overflow".to_string(),
-        })?;
+        let balance_i64 =
+            i64::try_from(balance).map_err(|_| AccountRepositoryError::OperationFailed {
+                operation: "update_balance".to_string(),
+                reason: "balance overflow".to_string(),
+            })?;
 
         sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
             .bind(balance_i64)
@@ -70,8 +74,6 @@ impl AccountTxRepository<Transaction<'static, Postgres>> for SqlxAccountTxReposi
         .await
         .map_err(map_sqlx_to_account_error)?;
 
-        rows.iter()
-            .map(|row| row_to_account(row))
-            .collect()
+        rows.iter().map(|row| row_to_account(row)).collect()
     }
 }

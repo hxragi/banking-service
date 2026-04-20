@@ -32,10 +32,7 @@ pub fn create_router(handler: Arc<AccountHttpHandler>) -> Router {
             "/accounts/{account_number}/transactions",
             get(super::handlers::accounts::get_transactions),
         )
-        .route(
-            "/transfers",
-            post(super::handlers::accounts::transfer),
-        )
+        .route("/transfers", post(super::handlers::accounts::transfer))
         .with_state((*handler).clone())
         .layer(
             TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {

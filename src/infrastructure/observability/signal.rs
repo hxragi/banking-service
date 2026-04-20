@@ -24,9 +24,7 @@ pub async fn shutdown_signal() {
     };
 
     #[cfg(not(unix))]
-    let terminate = async {
-        std::future::pending().await
-    };
+    let terminate = async { std::future::pending().await };
 
     tokio::select! {
         _ = ctrl_c => {},

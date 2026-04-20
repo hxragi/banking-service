@@ -15,14 +15,9 @@ use crate::application::{
     withdraw::WithdrawUseCase,
 };
 use crate::infrastructure::{
-    config::config::AppConfig,
-    database::pool::create_with_config,
-    database::transaction::Manager,
+    config::config::AppConfig, database::pool::create_with_config, database::transaction::Manager,
     generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
 };
-use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
-use crate::presentation::grpc::bank_service::bank;
-use crate::presentation::http::{handlers::AccountHttpHandler, router::create_router};
 use crate::infrastructure::{
     messaging::kafka_consumer::{
         ConsumerCommand, DlqProducer, ExternalEventHandlerImpl, KafkaConsumerConfig, RetryTracker,
@@ -45,6 +40,9 @@ use crate::infrastructure::{
     services::balance_cache::BalanceCache,
     services::idempotency_service::IdempotencyService,
 };
+use crate::presentation::grpc::bank_service::bank;
+use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
+use crate::presentation::http::{handlers::AccountHttpHandler, router::create_router};
 
 mod application;
 mod domain;

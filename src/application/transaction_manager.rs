@@ -7,8 +7,8 @@ use crate::{
     application::ports::{
         AccountRepository, AccountRepositoryError, AccountTxRepository, EventPublisher,
         IdempotencyError, IdempotencyTxRepository, MetricsPort, OperationError,
-        Transaction as TxTrait, TransactionPort,
-        TransactionRepositoryError, TransactionWriteRepository,
+        Transaction as TxTrait, TransactionPort, TransactionRepositoryError,
+        TransactionWriteRepository,
     },
     domain::{
         account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
@@ -141,7 +141,9 @@ impl From<TransactionError> for OperationError {
             },
             TransactionError::AccountRepository(repo_err) => repo_err.into(),
             TransactionError::TransactionRepository(tx_err) => tx_err.into(),
-            TransactionError::Idempotency(_) => OperationError::IdempotencyError { reason: "key conflict".to_string() },
+            TransactionError::Idempotency(_) => OperationError::IdempotencyError {
+                reason: "key conflict".to_string(),
+            },
         }
     }
 }
@@ -386,7 +388,9 @@ where
                     TransactionError::AccountUnavailable
                         | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
                         | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
-                        | TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure)
+                        | TransactionError::AccountRepository(
+                            AccountRepositoryError::SerializationFailure
+                        )
                 );
 
                 if is_transient && attempt < max_attempts {
@@ -501,12 +505,8 @@ async fn execute_deposit_in_tx<Tx: TxTrait + Send>(
         .update_balance(tx, account.id(), new_balance)
         .await?;
 
-    let transaction = Transaction::deposit(
-        Uuid::new_v4(),
-        amount,
-        account.id(),
-        account.created_at(),
-    );
+    let transaction =
+        Transaction::deposit(Uuid::new_v4(), amount, account.id(), account.created_at());
     transaction_write_repo.create(tx, &transaction).await?;
 
     let updated_account = Account::new(
@@ -545,12 +545,8 @@ async fn execute_withdraw_in_tx<Tx: TxTrait + Send>(
         .update_balance(tx, account.id(), new_balance)
         .await?;
 
-    let transaction = Transaction::withdraw(
-        Uuid::new_v4(),
-        amount,
-        account.id(),
-        account.created_at(),
-    );
+    let transaction =
+        Transaction::withdraw(Uuid::new_v4(), amount, account.id(), account.created_at());
     transaction_write_repo.create(tx, &transaction).await?;
 
     let updated_account = Account::new(
@@ -580,12 +576,12 @@ async fn execute_transfer_in_tx<Tx: TxTrait + Send>(
         return Err(TransactionError::SameAccountTransfer);
     }
 
-    let (first_number, second_number) =
-        if from_account_number.as_str() < to_account_number.as_str() {
-            (from_account_number.clone(), to_account_number.clone())
-        } else {
-            (to_account_number.clone(), from_account_number.clone())
-        };
+    let (first_number, second_number) = if from_account_number.as_str() < to_account_number.as_str()
+    {
+        (from_account_number.clone(), to_account_number.clone())
+    } else {
+        (to_account_number.clone(), from_account_number.clone())
+    };
 
     let accounts = account_tx_repo
         .lock_for_update_by_numbers(tx, first_number.as_str(), second_number.as_str())
@@ -694,7 +690,9 @@ mod tests {
                 TransactionError::AccountUnavailable
                     | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
                     | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
-                    | TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure)
+                    | TransactionError::AccountRepository(
+                        AccountRepositoryError::SerializationFailure
+                    )
             );
             assert!(is_transient, "expected {:?} to be transient", err);
         }
@@ -872,7 +870,8 @@ mod tests {
 
     #[test]
     fn converts_serialization_failure_to_operation_error() {
-        let tx_err = TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure);
+        let tx_err =
+            TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure);
         let op_err: OperationError = tx_err.into();
         assert!(matches!(op_err, OperationError::SerializationFailure));
     }
@@ -933,7 +932,9 @@ mod tests {
 
     #[test]
     fn idempotency_error_contains_reason() {
-        let op_err = OperationError::IdempotencyError { reason: "key conflict".to_string() };
+        let op_err = OperationError::IdempotencyError {
+            reason: "key conflict".to_string(),
+        };
         let msg = op_err.to_string();
         assert!(msg.contains("key conflict"));
     }
@@ -1036,11 +1037,11 @@ mod tests {
 
     use std::sync::Arc;
 
+    use super::FinancialTransactionManager;
+    use crate::application::ports::IdempotencyTxRepository;
     use crate::test_utils::fakes::{
         FakeTransactionPort, InMemoryAccountTxRepository, InMemoryTransactionWriteRepository,
     };
-    use crate::application::ports::IdempotencyTxRepository;
-    use super::FinancialTransactionManager;
 
     struct FakeIdempotencyTxRepository;
 
@@ -1259,8 +1260,8 @@ mod tests {
         let account = create_test_account("ACC001", 500);
         account_tx_repo.insert_account(account.clone()).await;
 
-        let account_repo = crate::test_utils::mocks::MockAccountRepository::new()
-            .with_account(account.clone());
+        let account_repo =
+            crate::test_utils::mocks::MockAccountRepository::new().with_account(account.clone());
         let tx_write_repo = Arc::new(InMemoryTransactionWriteRepository::new());
         let idem_repo = Arc::new(ConflictIdempotencyTxRepository {
             cached_response: account.id().to_string(),

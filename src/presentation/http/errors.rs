@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::Serialize;
 
@@ -109,13 +109,19 @@ mod tests {
 
     #[test]
     fn idempotency_error_maps_to_conflict() {
-        let http_err: HttpError = OperationError::IdempotencyError { reason: "test".to_string() }.into();
+        let http_err: HttpError = OperationError::IdempotencyError {
+            reason: "test".to_string(),
+        }
+        .into();
         assert!(matches!(http_err, HttpError::ResourceConflict(_)));
     }
 
     #[test]
     fn not_found_maps_to_invalid_input() {
-        let http_err: HttpError = OperationError::NotFound { resource: "account".to_string() }.into();
+        let http_err: HttpError = OperationError::NotFound {
+            resource: "account".to_string(),
+        }
+        .into();
         assert!(matches!(http_err, HttpError::InvalidInput(_)));
     }
 

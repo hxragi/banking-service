@@ -242,7 +242,9 @@ impl KafkaEventPublisher {
     }
 }
 
-use crate::application::ports::{EventPublisher as EventPublisherPort, EventPublishError as PortEventPublishError};
+use crate::application::ports::{
+    EventPublishError as PortEventPublishError, EventPublisher as EventPublisherPort,
+};
 use crate::domain::transaction_event::TransactionEvent;
 use crate::infrastructure::dto::transaction_event_dto::TransactionEventDto;
 
@@ -254,9 +256,9 @@ impl EventPublisherPort for KafkaEventPublisher {
         event: &TransactionEvent,
     ) -> Result<(), PortEventPublishError> {
         let domain_event_payload = TransactionEventDto::from(event.clone());
-        let payload_json = domain_event_payload.to_json().map_err(|e| {
-            PortEventPublishError::SerializationError(e.to_string())
-        })?;
+        let payload_json = domain_event_payload
+            .to_json()
+            .map_err(|e| PortEventPublishError::SerializationError(e.to_string()))?;
 
         let domain_event = DomainEvent {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -267,10 +269,14 @@ impl EventPublisherPort for KafkaEventPublisher {
             metadata: std::collections::HashMap::new(),
         };
 
-        self.publish(topic, &domain_event).await.map_err(|e| match e {
-            EventPublishError::PublishFailed(msg) => PortEventPublishError::PublishFailed(msg),
-            EventPublishError::ConnectionError(msg) => PortEventPublishError::ConnectionError(msg),
-        })
+        self.publish(topic, &domain_event)
+            .await
+            .map_err(|e| match e {
+                EventPublishError::PublishFailed(msg) => PortEventPublishError::PublishFailed(msg),
+                EventPublishError::ConnectionError(msg) => {
+                    PortEventPublishError::ConnectionError(msg)
+                }
+            })
     }
 }
 

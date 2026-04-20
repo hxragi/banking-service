@@ -109,7 +109,9 @@ fn map_operation_error(err: OperationError) -> Status {
         }
         OperationError::LockTimeout => Status::aborted("lock timeout - please retry"),
         OperationError::Deadlock => Status::aborted("deadlock detected - please retry"),
-        OperationError::SerializationFailure => Status::aborted("serialization failure - please retry"),
+        OperationError::SerializationFailure => {
+            Status::aborted("serialization failure - please retry")
+        }
         OperationError::UniqueConstraintViolation(msg) => {
             Status::already_exists(format!("conflict: {}", msg))
         }
@@ -117,7 +119,9 @@ fn map_operation_error(err: OperationError) -> Status {
             tracing::error!(message = %msg, "connection error");
             Status::unavailable("database temporarily unavailable - please retry")
         }
-        OperationError::IdempotencyError { reason } => Status::already_exists(format!("idempotency conflict: {}", reason)),
+        OperationError::IdempotencyError { reason } => {
+            Status::already_exists(format!("idempotency conflict: {}", reason))
+        }
     }
 }
 

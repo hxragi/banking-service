@@ -135,13 +135,7 @@ mod tests {
 
     #[test]
     fn gov_fine_created_event_serialization_roundtrip() {
-        let event = GovFineCreatedEvent::new(
-            "fine-123",
-            "user-456",
-            5000,
-            "Speeding",
-            "idem-789",
-        );
+        let event = GovFineCreatedEvent::new("fine-123", "user-456", 5000, "Speeding", "idem-789");
 
         let json = event.to_json().unwrap();
         let deserialized = GovFineCreatedEvent::from_json(&json).unwrap();

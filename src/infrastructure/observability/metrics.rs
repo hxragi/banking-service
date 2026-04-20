@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use prometheus::{Encoder as _, IntCounterVec, Opts, Registry};
 use std::sync::Arc;
 

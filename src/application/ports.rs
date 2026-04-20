@@ -201,11 +201,8 @@ pub trait TransactionWriteRepository<Tx>: Send + Sync {
 
 #[async_trait]
 pub trait EventPublisher: Send + Sync {
-    async fn publish(
-        &self,
-        topic: &str,
-        event: &TransactionEvent,
-    ) -> Result<(), EventPublishError>;
+    async fn publish(&self, topic: &str, event: &TransactionEvent)
+    -> Result<(), EventPublishError>;
 }
 
 pub trait MetricsPort: Send + Sync {
@@ -300,7 +297,9 @@ impl From<TransactionRepositoryError> for OperationError {
         match err {
             TransactionRepositoryError::LockTimeout => OperationError::LockTimeout,
             TransactionRepositoryError::Deadlock => OperationError::Deadlock,
-            TransactionRepositoryError::SerializationFailure => OperationError::SerializationFailure,
+            TransactionRepositoryError::SerializationFailure => {
+                OperationError::SerializationFailure
+            }
             TransactionRepositoryError::UniqueConstraintViolation(msg) => {
                 OperationError::UniqueConstraintViolation(msg)
             }

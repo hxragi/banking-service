@@ -29,7 +29,7 @@ impl InternalAuthInterceptor {
 impl tonic::service::Interceptor for InternalAuthInterceptor {
     fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
         let internal_api_key = self.internal_api_key.clone();
-        
+
         if let Some(header_value) = request.metadata().get("x-internal-api-key") {
             if let Ok(header_str) = header_value.to_str() {
                 if constant_time_eq(header_str, internal_api_key.as_str()) {
@@ -40,7 +40,7 @@ impl tonic::service::Interceptor for InternalAuthInterceptor {
                 }
             }
         }
-        
+
         Ok(request)
     }
 }

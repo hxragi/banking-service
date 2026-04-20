@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     application::ports::{
-        AccountRepositoryError, AccountTxRepository, EventPublisher, EventPublishError,
+        AccountRepositoryError, AccountTxRepository, EventPublishError, EventPublisher,
         MetricsPort, Transaction as TxTrait, TransactionError, TransactionPort,
         TransactionRepositoryError, TransactionWriteRepository,
     },
@@ -162,23 +162,17 @@ pub struct FakeTransactionPort;
 impl TransactionPort for FakeTransactionPort {
     type Transaction = ();
 
-    fn begin(
-        &self,
-    ) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
+    fn begin(&self) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
         std::future::ready(Ok(()))
     }
 }
 
 impl TxTrait for () {
-    fn commit(
-        self,
-    ) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
+    fn commit(self) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
         std::future::ready(Ok(()))
     }
 
-    fn rollback(
-        self,
-    ) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
+    fn rollback(self) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send {
         std::future::ready(Ok(()))
     }
 }
