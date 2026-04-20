@@ -745,19 +745,17 @@ pub async fn start_consumer_with_retry(
 
     let retry_handle = tokio::spawn(async move {
         loop {
-            match shutdown_rx.try_recv() {
-                Ok(ConsumerCommand::Shutdown) => {
-                    tracing::info!("Received shutdown command during Kafka retry loop");
-                    break;
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(check_interval_secs)) => {}
+                cmd = shutdown_rx.recv() => {
+                    match cmd {
+                        Some(ConsumerCommand::Shutdown) | None => {
+                            tracing::info!("Received shutdown command during Kafka retry loop");
+                            break;
+                        }
+                    }
                 }
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    tracing::info!("Shutdown channel closed, stopping retry loop");
-                    break;
-                }
-                _ => {}
             }
-
-            tokio::time::sleep(Duration::from_secs(check_interval_secs)).await;
 
             match check_kafka_connectivity(&bootstrap_servers, 10).await {
                 Ok(()) => {
@@ -1022,6 +1020,18 @@ mod tests {
             .decode(payload_obj.get("base64").unwrap().as_str().unwrap())
             .unwrap();
         assert_eq!(decoded, non_utf8);
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_responds_immediately() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ConsumerCommand>(1);
+        tx.send(ConsumerCommand::Shutdown).await.unwrap();
+
+        let received = tokio::select! {
+            cmd = rx.recv() => cmd,
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => None,
+        };
+        assert!(matches!(received, Some(ConsumerCommand::Shutdown)));
     }
 
     #[test]
