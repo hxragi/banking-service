@@ -52,7 +52,7 @@ impl From<OperationError> for HttpError {
                 )
             }
             OperationError::IdempotencyError => {
-                HttpError::SystemFailure("idempotency error".into())
+                HttpError::ResourceConflict("idempotency key conflict".into())
             }
         }
     }
@@ -93,5 +93,29 @@ impl IntoResponse for HttpError {
         }
 
         (status, Json(ErrorResponse { error: message })).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::ports::OperationError;
+
+    #[test]
+    fn idempotency_error_maps_to_conflict() {
+        let http_err: HttpError = OperationError::IdempotencyError.into();
+        assert!(matches!(http_err, HttpError::ResourceConflict(_)));
+    }
+
+    #[test]
+    fn not_found_maps_to_invalid_input() {
+        let http_err: HttpError = OperationError::NotFound { resource: "account".to_string() }.into();
+        assert!(matches!(http_err, HttpError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn insufficient_funds_maps_to_invalid_input() {
+        let http_err: HttpError = OperationError::InsufficientFunds.into();
+        assert!(matches!(http_err, HttpError::InvalidInput(_)));
     }
 }
