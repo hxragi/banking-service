@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use crate::application::ports::{TransactionError, TransactionPort};
 
+pub type DbTransaction = Transaction<'static, Postgres>;
+
 #[derive(Clone)]
 pub struct Manager {
     pool: Arc<PgPool>,

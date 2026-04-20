@@ -16,7 +16,7 @@ use crate::{
     },
 };
 
-pub type DbTransaction = <crate::infrastructure::database::transaction::Manager as TransactionPort>::Transaction;
+pub type DbTransaction = crate::infrastructure::database::transaction::DbTransaction;
 
 pub type TransactionManager = FinancialTransactionManager<
     crate::infrastructure::database::transaction::Manager,
