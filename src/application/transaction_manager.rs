@@ -1,29 +1,27 @@
 use std::sync::Arc;
 
 use thiserror::Error;
-use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::{
     application::ports::{
-        AccountRepository, AccountRepositoryError, IdempotencyError, IdempotencyTxRepository,
-        OperationError, TransactionPort, TransactionRepository, TransactionRepositoryError,
+        AccountRepository, AccountRepositoryError, AccountTxRepository, EventPublisher,
+        IdempotencyError, IdempotencyTxRepository, MetricsPort, OperationError,
+        Transaction as TxTrait, TransactionPort,
+        TransactionRepositoryError, TransactionWriteRepository,
     },
     domain::{
         account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
-        org_id::OrgId, owner::Owner, transaction::Transaction, transaction_event::TransactionEvent,
-        user_id::UserId,
-    },
-    infrastructure::{
-        database::transaction::Manager, dto::transaction_event_dto::TransactionEventDto,
-        messaging::kafka_event_publisher::DomainEvent,
-        messaging::kafka_event_publisher::KafkaEventPublisher, observability::metrics::Metrics,
+        transaction::Transaction, transaction_event::TransactionEvent,
     },
 };
 
-pub type DbTransaction = <Manager as TransactionPort>::Transaction;
+pub type DbTransaction = <crate::infrastructure::database::transaction::Manager as TransactionPort>::Transaction;
 
-pub type TransactionManager = FinancialTransactionManager<Manager>;
+pub type TransactionManager = FinancialTransactionManager<
+    crate::infrastructure::database::transaction::Manager,
+    DbTransaction,
+>;
 
 #[derive(Debug, Clone)]
 pub struct DepositInput {
@@ -139,36 +137,42 @@ impl From<TransactionError> for OperationError {
 }
 
 #[derive(Clone)]
-pub struct FinancialTransactionManager<T: TransactionPort<Transaction = DbTransaction>> {
-    db_manager: T,
+pub struct FinancialTransactionManager<M, Tx> {
+    db_manager: M,
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-    idempotency_tx_repository: Arc<dyn IdempotencyTxRepository<DbTransaction> + Send + Sync>,
-    event_publisher: Option<Arc<KafkaEventPublisher>>,
+    account_tx_repository: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+    transaction_write_repository: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    idempotency_tx_repository: Arc<dyn IdempotencyTxRepository<Tx> + Send + Sync>,
+    event_publisher: Option<Arc<dyn EventPublisher + Send + Sync>>,
     event_topic: String,
-    metrics: Option<Arc<Metrics>>,
+    metrics: Option<Arc<dyn MetricsPort + Send + Sync>>,
+    _phantom: std::marker::PhantomData<Tx>,
 }
 
-impl<T> FinancialTransactionManager<T>
+impl<M, Tx> FinancialTransactionManager<M, Tx>
 where
-    T: TransactionPort<Transaction = DbTransaction>,
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
 {
     pub fn new(
-        db_manager: T,
+        db_manager: M,
         account_repository: Arc<dyn AccountRepository + Send + Sync>,
-        transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-        idempotency_tx_repository: Arc<dyn IdempotencyTxRepository<DbTransaction> + Send + Sync>,
-        event_publisher: Option<Arc<KafkaEventPublisher>>,
-        metrics: Option<Arc<Metrics>>,
+        account_tx_repository: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+        transaction_write_repository: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+        idempotency_tx_repository: Arc<dyn IdempotencyTxRepository<Tx> + Send + Sync>,
+        event_publisher: Option<Arc<dyn EventPublisher + Send + Sync>>,
+        metrics: Option<Arc<dyn MetricsPort + Send + Sync>>,
     ) -> Self {
         Self {
             db_manager,
             account_repository,
-            transaction_repository,
+            account_tx_repository,
+            transaction_write_repository,
             idempotency_tx_repository,
             event_publisher,
             event_topic: "bank.transaction.created".to_string(),
             metrics,
+            _phantom: std::marker::PhantomData,
         }
     }
 
@@ -178,26 +182,8 @@ where
             let topic = self.event_topic.clone();
 
             tokio::spawn(async move {
-                let domain_event_payload = TransactionEvent::from_transaction(&transaction);
-                let dto_event_payload: TransactionEventDto = domain_event_payload.into();
-                let payload_json = match dto_event_payload.to_json() {
-                    Ok(json) => json,
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to serialize event payload");
-                        return;
-                    }
-                };
-
-                let domain_event = DomainEvent {
-                    event_id: uuid::Uuid::new_v4().to_string(),
-                    event_type: "TransactionCreated".to_string(),
-                    aggregate_id: transaction.id().to_string(),
-                    aggregate_type: "transaction".to_string(),
-                    payload: payload_json,
-                    metadata: std::collections::HashMap::new(),
-                };
-
-                match publisher.publish(&topic, &domain_event).await {
+                let event = TransactionEvent::from_transaction(&transaction);
+                match publisher.publish(&topic, &event).await {
                     Ok(_) => {
                         tracing::info!(
                             transaction_id = %transaction.id(),
@@ -234,7 +220,8 @@ where
         }
 
         let account_repo = self.account_repository.clone();
-        let tx_repo = self.transaction_repository.clone();
+        let account_tx_repo = self.account_tx_repository.clone();
+        let tx_write_repo = self.transaction_write_repository.clone();
         let idem_tx_repo = self.idempotency_tx_repository.clone();
         let operation_clone = operation.clone();
         let db_manager = self.db_manager.clone();
@@ -243,7 +230,8 @@ where
         let result = execute_with_retry(
             operation_clone,
             account_repo,
-            tx_repo,
+            account_tx_repo,
+            tx_write_repo,
             idem_tx_repo,
             db_manager,
             idem_key_clone,
@@ -284,16 +272,18 @@ where
     }
 }
 
-async fn execute_with_retry<T>(
+async fn execute_with_retry<M, Tx>(
     operation: TransactionOperation,
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-    idempotency_repository: Arc<dyn IdempotencyTxRepository<DbTransaction> + Send + Sync>,
-    db_manager: T,
+    account_tx_repository: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+    transaction_write_repository: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    idempotency_repository: Arc<dyn IdempotencyTxRepository<Tx> + Send + Sync>,
+    db_manager: M,
     idempotency_key: Option<String>,
 ) -> Result<TransactionOutput, TransactionError>
 where
-    T: TransactionPort<Transaction = DbTransaction>,
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
 {
     let max_attempts = 3u32;
     let mut attempt = 1u32;
@@ -310,8 +300,8 @@ where
             TransactionOperation::Deposit(input) => {
                 execute_deposit_in_tx(
                     input.clone(),
-                    account_repository.clone(),
-                    transaction_repository.clone(),
+                    account_tx_repository.clone(),
+                    transaction_write_repository.clone(),
                     &mut db_tx,
                 )
                 .await
@@ -319,8 +309,8 @@ where
             TransactionOperation::Withdraw(input) => {
                 execute_withdraw_in_tx(
                     input.clone(),
-                    account_repository.clone(),
-                    transaction_repository.clone(),
+                    account_tx_repository.clone(),
+                    transaction_write_repository.clone(),
                     &mut db_tx,
                 )
                 .await
@@ -328,8 +318,8 @@ where
             TransactionOperation::Transfer(input) => {
                 execute_transfer_in_tx(
                     input.clone(),
-                    account_repository.clone(),
-                    transaction_repository.clone(),
+                    account_tx_repository.clone(),
+                    transaction_write_repository.clone(),
                     &mut db_tx,
                 )
                 .await
@@ -474,14 +464,12 @@ async fn parse_cached_response(
     }
 }
 
-async fn execute_deposit_in_tx(
+async fn execute_deposit_in_tx<Tx: TxTrait + Send>(
     input: DepositInput,
-    _account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    _transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-    db_tx: &mut DbTransaction,
+    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
-    use sqlx::Row;
-
     let DepositInput {
         account_number,
         amount,
@@ -489,188 +477,87 @@ async fn execute_deposit_in_tx(
 
     tracing::debug!(account_number = %account_number, "execute_deposit_in_tx started");
 
-    let row = sqlx::query(
-        "SELECT id, number, user_id, org_id, balance, created_at FROM accounts WHERE number = $1 FOR UPDATE"
-    )
-    .bind(account_number.as_str())
-    .fetch_optional(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to find account with lock");
-        map_sqlx_to_tx_error(e)
-    })?;
-
-    let row = match row {
-        Some(r) => r,
-        None => {
-            tracing::warn!(account_number = %account_number, "account not found in execute_deposit_in_tx");
-            return Err(TransactionError::AccountNotFound);
-        }
-    };
+    let account = account_tx_repo
+        .find_by_number_for_update(tx, account_number.as_str())
+        .await?
+        .ok_or(TransactionError::AccountNotFound)?;
 
     tracing::debug!(account_number = %account_number, "account found, processing deposit");
 
-    let account_id: uuid::Uuid = row.get("id");
-    let current_balance: i64 = row.get("balance");
-    let new_balance = current_balance + (amount.as_u64() as i64);
-    let created_at: time::OffsetDateTime = row.get("created_at");
+    let new_balance = account.balance().as_u64() + amount.as_u64();
+    account_tx_repo
+        .update_balance(tx, account.id(), new_balance)
+        .await?;
 
-    let user_id: Option<String> = row.get("user_id");
-    let org_id: Option<String> = row.get("org_id");
+    let transaction = Transaction::deposit(
+        Uuid::new_v4(),
+        amount,
+        account.id(),
+        account.created_at(),
+    );
+    transaction_write_repo.create(tx, &transaction).await?;
 
-    sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
-        .bind(new_balance)
-        .bind(account_id)
-        .execute(&mut **db_tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to update account balance");
-            TransactionError::AccountRepository(AccountRepositoryError::OperationFailed {
-                operation: "update_balance".to_string(),
-                reason: e.to_string(),
-            })
-        })?;
-
-    let tx_id = Uuid::new_v4();
-    let tx_kind = "deposit";
-    let tx_amount = amount.as_u64() as i64;
-
-    sqlx::query(
-        "INSERT INTO transactions (id, kind, amount, to_account_id, account_id) VALUES ($1, $2::transaction_kind, $3, $4, $5)"
-    )
-    .bind(tx_id)
-    .bind(tx_kind)
-    .bind(tx_amount)
-    .bind(account_id)
-    .bind(account_id)
-    .execute(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to create transaction record");
-        TransactionError::TransactionRepository(TransactionRepositoryError::TransactionFailed)
-    })?;
-
-    let owner = if let Some(uid) = user_id {
-        Owner::User(UserId::new(&uid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else if let Some(oid) = org_id {
-        Owner::Org(OrgId::new(&oid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else {
-        return Err(TransactionError::AccountUnavailable);
-    };
-
-    let account = Account::new(
-        account_id,
-        account_number,
-        owner,
-        Balance::new(new_balance as u64),
-        created_at,
+    let updated_account = Account::new(
+        account.id(),
+        account.number().clone(),
+        account.owner().clone(),
+        Balance::new(new_balance),
+        account.created_at(),
     );
 
-    let transaction = Transaction::deposit(tx_id, amount, account_id, created_at);
-
-    Ok(TransactionOutput::Deposit(account, transaction))
+    Ok(TransactionOutput::Deposit(updated_account, transaction))
 }
 
-async fn execute_withdraw_in_tx(
+async fn execute_withdraw_in_tx<Tx: TxTrait + Send>(
     input: WithdrawInput,
-    _account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    _transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-    db_tx: &mut DbTransaction,
+    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
-    use sqlx::Row;
-
     let WithdrawInput {
         account_number,
         amount,
     } = input;
 
-    let row = sqlx::query(
-        "SELECT id, number, user_id, org_id, balance, created_at FROM accounts WHERE number = $1 FOR UPDATE"
-    )
-    .bind(account_number.as_str())
-    .fetch_optional(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to find account with lock");
-        map_sqlx_to_tx_error(e)
-    })?;
+    let account = account_tx_repo
+        .find_by_number_for_update(tx, account_number.as_str())
+        .await?
+        .ok_or(TransactionError::AccountNotFound)?;
 
-    let row = row.ok_or(TransactionError::AccountNotFound)?;
-
-    let account_id: uuid::Uuid = row.get("id");
-    let current_balance: i64 = row.get("balance");
-    let withdraw_amount = amount.as_u64() as i64;
-    let created_at: time::OffsetDateTime = row.get("created_at");
-    let user_id: Option<String> = row.get("user_id");
-    let org_id: Option<String> = row.get("org_id");
-
-    if current_balance < withdraw_amount {
+    if account.balance().as_u64() < amount.as_u64() {
         return Err(TransactionError::InsufficientFunds);
     }
 
-    let new_balance = current_balance - withdraw_amount;
+    let new_balance = account.balance().as_u64() - amount.as_u64();
+    account_tx_repo
+        .update_balance(tx, account.id(), new_balance)
+        .await?;
 
-    sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
-        .bind(new_balance)
-        .bind(account_id)
-        .execute(&mut **db_tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to update account balance");
-            TransactionError::AccountRepository(AccountRepositoryError::OperationFailed {
-                operation: "update_balance".to_string(),
-                reason: e.to_string(),
-            })
-        })?;
+    let transaction = Transaction::withdraw(
+        Uuid::new_v4(),
+        amount,
+        account.id(),
+        account.created_at(),
+    );
+    transaction_write_repo.create(tx, &transaction).await?;
 
-    let tx_id = Uuid::new_v4();
-    let tx_kind = "withdraw";
-    let tx_amount = amount.as_u64() as i64;
-
-    sqlx::query(
-        "INSERT INTO transactions (id, kind, amount, from_account_id, account_id) VALUES ($1, $2::transaction_kind, $3, $4, $5)"
-    )
-    .bind(tx_id)
-    .bind(tx_kind)
-    .bind(tx_amount)
-    .bind(account_id)
-    .bind(account_id)
-    .execute(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to create transaction record");
-        TransactionError::TransactionRepository(TransactionRepositoryError::TransactionFailed)
-    })?;
-
-    let owner = if let Some(uid) = user_id {
-        Owner::User(UserId::new(&uid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else if let Some(oid) = org_id {
-        Owner::Org(OrgId::new(&oid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else {
-        return Err(TransactionError::AccountUnavailable);
-    };
-
-    let account = Account::new(
-        account_id,
-        account_number,
-        owner,
-        Balance::new(new_balance as u64),
-        created_at,
+    let updated_account = Account::new(
+        account.id(),
+        account.number().clone(),
+        account.owner().clone(),
+        Balance::new(new_balance),
+        account.created_at(),
     );
 
-    let transaction = Transaction::withdraw(tx_id, amount, account_id, created_at);
-
-    Ok(TransactionOutput::Withdraw(account, transaction))
+    Ok(TransactionOutput::Withdraw(updated_account, transaction))
 }
 
-async fn execute_transfer_in_tx(
+async fn execute_transfer_in_tx<Tx: TxTrait + Send>(
     input: TransferInput,
-    _account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    _transaction_repository: Arc<dyn TransactionRepository + Send + Sync>,
-    db_tx: &mut DbTransaction,
+    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
+    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
-    use sqlx::Row;
-
     let TransferInput {
         from_account_number,
         to_account_number,
@@ -681,211 +568,76 @@ async fn execute_transfer_in_tx(
         return Err(TransactionError::SameAccountTransfer);
     }
 
-    let (first_number, second_number) = {
-        let from_str = from_account_number.as_str();
-        let to_str = to_account_number.as_str();
-        if from_str < to_str {
+    let (first_number, second_number) =
+        if from_account_number.as_str() < to_account_number.as_str() {
             (from_account_number.clone(), to_account_number.clone())
         } else {
             (to_account_number.clone(), from_account_number.clone())
-        }
-    };
+        };
 
-    let rows = sqlx::query(
-        "SELECT id, number, user_id, org_id, balance, created_at FROM accounts WHERE number IN ($1, $2) ORDER BY number FOR UPDATE"
-    )
-    .bind(first_number.as_str())
-    .bind(second_number.as_str())
-    .fetch_all(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to lock accounts");
-        map_sqlx_to_tx_error(e)
-    })?;
+    let accounts = account_tx_repo
+        .lock_for_update_by_numbers(tx, first_number.as_str(), second_number.as_str())
+        .await?;
 
-    let first_found = rows.iter().any(|r: &sqlx::postgres::PgRow| {
-        let num: String = r.get("number");
-        num == first_number.as_str()
-    });
-    let second_found = rows.iter().any(|r: &sqlx::postgres::PgRow| {
-        let num: String = r.get("number");
-        num == second_number.as_str()
-    });
+    let from_account = accounts
+        .iter()
+        .find(|a| a.number() == &from_account_number)
+        .cloned()
+        .ok_or(TransactionError::FromAccountNotFound)?;
 
-    if !first_found {
-        return Err(if first_number == from_account_number {
-            TransactionError::FromAccountNotFound
-        } else {
-            TransactionError::ToAccountNotFound
-        });
-    }
+    let to_account = accounts
+        .iter()
+        .find(|a| a.number() == &to_account_number)
+        .cloned()
+        .ok_or(TransactionError::ToAccountNotFound)?;
 
-    if !second_found {
-        return Err(if second_number == from_account_number {
-            TransactionError::FromAccountNotFound
-        } else {
-            TransactionError::ToAccountNotFound
-        });
-    }
-
-    let (from_row, to_row): (&sqlx::postgres::PgRow, &sqlx::postgres::PgRow) = {
-        let row_0_number: String = rows[0].get("number");
-        if row_0_number == from_account_number.as_str() {
-            (&rows[0], &rows[1])
-        } else {
-            (&rows[1], &rows[0])
-        }
-    };
-
-    let from_id: uuid::Uuid = from_row.get("id");
-    let from_balance: i64 = from_row.get("balance");
-    let from_user_id: Option<String> = from_row.get("user_id");
-    let from_org_id: Option<String> = from_row.get("org_id");
-    let from_created_at: time::OffsetDateTime = from_row.get("created_at");
-
-    let to_id: uuid::Uuid = to_row.get("id");
-    let to_balance: i64 = to_row.get("balance");
-    let to_user_id: Option<String> = to_row.get("user_id");
-    let to_org_id: Option<String> = to_row.get("org_id");
-    let to_created_at: time::OffsetDateTime = to_row.get("created_at");
-
-    let withdraw_amount = amount.as_u64() as i64;
-    if from_balance < withdraw_amount {
+    if from_account.balance().as_u64() < amount.as_u64() {
         return Err(TransactionError::InsufficientFunds);
     }
-    let new_from_balance = from_balance - withdraw_amount;
-    let new_to_balance = to_balance + withdraw_amount;
 
-    sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
-        .bind(new_from_balance)
-        .bind(from_id)
-        .execute(&mut **db_tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to create transaction record");
-            TransactionError::TransactionRepository(TransactionRepositoryError::TransactionFailed)
-        })?;
+    let new_from_balance = from_account.balance().as_u64() - amount.as_u64();
+    let new_to_balance = to_account.balance().as_u64() + amount.as_u64();
 
-    sqlx::query("UPDATE accounts SET balance = $1 WHERE id = $2")
-        .bind(new_to_balance)
-        .bind(to_id)
-        .execute(&mut **db_tx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to update account balance");
-            TransactionError::AccountRepository(AccountRepositoryError::OperationFailed {
-                operation: "update_balance".to_string(),
-                reason: e.to_string(),
-            })
-        })?;
+    account_tx_repo
+        .update_balance(tx, from_account.id(), new_from_balance)
+        .await?;
+    account_tx_repo
+        .update_balance(tx, to_account.id(), new_to_balance)
+        .await?;
 
-    let tx_id = Uuid::new_v4();
-    let tx_kind = "transfer";
-    let tx_amount = amount.as_u64() as i64;
-
-    sqlx::query(
-        "INSERT INTO transactions (id, kind, amount, from_account_id, to_account_id, account_id) VALUES ($1, $2::transaction_kind, $3, $4, $5, $6)"
+    let transaction = Transaction::transfer(
+        Uuid::new_v4(),
+        amount,
+        from_account.id(),
+        to_account.id(),
+        time::OffsetDateTime::now_utc(),
     )
-    .bind(tx_id)
-    .bind(tx_kind)
-    .bind(tx_amount)
-    .bind(from_id)
-    .bind(to_id)
-    .bind(from_id)
-    .execute(&mut **db_tx)
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, "failed to create transaction record");
-        TransactionError::TransactionRepository(TransactionRepositoryError::TransactionFailed)
-    })?;
+    .map_err(|_| TransactionError::SameAccountTransfer)?;
 
-    let from_owner = if let Some(uid) = from_user_id {
-        Owner::User(UserId::new(&uid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else if let Some(oid) = from_org_id {
-        Owner::Org(OrgId::new(&oid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else {
-        return Err(TransactionError::AccountUnavailable);
-    };
+    transaction_write_repo.create(tx, &transaction).await?;
 
-    let to_owner = if let Some(uid) = to_user_id {
-        Owner::User(UserId::new(&uid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else if let Some(oid) = to_org_id {
-        Owner::Org(OrgId::new(&oid).map_err(|_| TransactionError::AccountUnavailable)?)
-    } else {
-        return Err(TransactionError::AccountUnavailable);
-    };
-
-    let from_account = Account::new(
-        from_id,
-        if from_account_number == first_number {
-            first_number.clone()
-        } else {
-            second_number.clone()
-        },
-        from_owner,
-        Balance::new(new_from_balance as u64),
-        from_created_at,
+    let updated_from = Account::new(
+        from_account.id(),
+        from_account.number().clone(),
+        from_account.owner().clone(),
+        Balance::new(new_from_balance),
+        from_account.created_at(),
     );
-    let to_account = Account::new(
-        to_id,
-        if to_account_number == first_number {
-            first_number.clone()
-        } else {
-            second_number.clone()
-        },
-        to_owner,
-        Balance::new(new_to_balance as u64),
-        to_created_at,
+    let updated_to = Account::new(
+        to_account.id(),
+        to_account.number().clone(),
+        to_account.owner().clone(),
+        Balance::new(new_to_balance),
+        to_account.created_at(),
     );
-
-    let transaction =
-        Transaction::transfer(tx_id, amount, from_id, to_id, OffsetDateTime::now_utc())
-            .map_err(|_| TransactionError::SameAccountTransfer)?;
 
     Ok(TransactionOutput::Transfer(
         TransferResult {
-            from_account,
-            to_account,
+            from_account: updated_from,
+            to_account: updated_to,
         },
         transaction,
     ))
-}
-
-fn map_sqlx_to_tx_error(err: sqlx::Error) -> TransactionError {
-    use crate::application::ports::{AccountRepositoryError, TransactionRepositoryError};
-
-    match err {
-        sqlx::Error::Database(db_err) => match db_err.code().as_deref() {
-            Some("23505") => TransactionError::AccountRepository(
-                AccountRepositoryError::UniqueConstraintViolation(db_err.message().to_string()),
-            ),
-            Some("23503") => TransactionError::AccountNotFound,
-            Some("23514") => TransactionError::TransactionRepository(
-                TransactionRepositoryError::CheckConstraintViolation(db_err.message().to_string()),
-            ),
-            Some("40P01") | Some("40001") | Some("57014") => {
-                TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
-            }
-            Some("08006") | Some("08001") | Some("08004") => TransactionError::AccountRepository(
-                AccountRepositoryError::ConnectionError(db_err.message().to_string()),
-            ),
-            _ => TransactionError::AccountRepository(AccountRepositoryError::OperationFailed {
-                operation: "map_sqlx_error".to_string(),
-                reason: "database error".to_string(),
-            }),
-        },
-        sqlx::Error::PoolTimedOut => {
-            TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
-        }
-        sqlx::Error::Io(io_err) => TransactionError::AccountRepository(
-            AccountRepositoryError::ConnectionError(format!("I/O error: {}", io_err)),
-        ),
-        sqlx::Error::RowNotFound => TransactionError::AccountNotFound,
-        _other => TransactionError::AccountRepository(AccountRepositoryError::OperationFailed {
-            operation: "map_sqlx_error".to_string(),
-            reason: "unknown database error".to_string(),
-        }),
-    }
 }
 
 #[cfg(test)]
@@ -1243,5 +995,206 @@ mod tests {
             format!("{}", TransactionError::AccountUnavailable),
             "account unavailable"
         );
+    }
+
+    use std::sync::Arc;
+
+    use crate::test_utils::fakes::{
+        FakeTransactionPort, InMemoryAccountTxRepository, InMemoryTransactionWriteRepository,
+    };
+    use crate::application::ports::IdempotencyTxRepository;
+    use super::FinancialTransactionManager;
+
+    struct FakeIdempotencyTxRepository;
+
+    #[async_trait::async_trait]
+    impl IdempotencyTxRepository<()> for FakeIdempotencyTxRepository {
+        async fn save_in_tx(
+            &self,
+            _key: &str,
+            _response: &str,
+            _tx: &mut (),
+        ) -> Result<(), IdempotencyError> {
+            Ok(())
+        }
+    }
+
+    fn setup_manager(
+        account_tx_repo: Arc<InMemoryAccountTxRepository>,
+    ) -> FinancialTransactionManager<FakeTransactionPort, ()> {
+        let account_repo = crate::test_utils::mocks::MockAccountRepository::new();
+        let tx_write_repo = Arc::new(InMemoryTransactionWriteRepository::new());
+        let idem_repo = Arc::new(FakeIdempotencyTxRepository);
+        FinancialTransactionManager::new(
+            FakeTransactionPort,
+            Arc::new(account_repo),
+            account_tx_repo,
+            tx_write_repo,
+            idem_repo,
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_deposit_updates_balance() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo.clone());
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Deposit(acc, _tx) => {
+                assert_eq!(acc.balance().as_u64(), 700);
+            }
+            _ => panic!("expected deposit output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deposit_account_not_found() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let manager = setup_manager(account_tx_repo);
+
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("MISSING").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::AccountNotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_success() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Withdraw(WithdrawInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Withdraw(acc, _tx) => {
+                assert_eq!(acc.balance().as_u64(), 300);
+            }
+            _ => panic!("expected withdraw output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_withdraw_insufficient_funds() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 100);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Withdraw(WithdrawInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::InsufficientFunds)));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_success() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let from = create_test_account("ACC001", 1000);
+        let to = create_test_account("ACC002", 500);
+        account_tx_repo.insert_account(from.clone()).await;
+        account_tx_repo.insert_account(to.clone()).await;
+
+        let manager = setup_manager(account_tx_repo.clone());
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("ACC002").unwrap(),
+                    amount: Amount::new(300).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Transfer(transfer_result, _tx) => {
+                assert_eq!(transfer_result.from_account.balance().as_u64(), 700);
+                assert_eq!(transfer_result.to_account.balance().as_u64(), 800);
+            }
+            _ => panic!("expected transfer output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_transfer_same_account() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 1000);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::SameAccountTransfer)));
+    }
+
+    #[tokio::test]
+    async fn test_transfer_to_account_not_found() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 1000);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let manager = setup_manager(account_tx_repo);
+        let result = manager
+            .execute(
+                TransactionOperation::Transfer(TransferInput {
+                    from_account_number: AccountNumber::new("ACC001").unwrap(),
+                    to_account_number: AccountNumber::new("MISSING").unwrap(),
+                    amount: Amount::new(100).unwrap(),
+                }),
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(TransactionError::ToAccountNotFound)));
     }
 }

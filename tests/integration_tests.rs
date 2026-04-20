@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bank_service::{
     application::{
         deposit::{DepositInput, DepositUseCase},
-        ports::BalanceCachePort,
+        ports::{BalanceCachePort, MetricsPort},
         transaction_manager::TransactionManager,
         transfer::{TransferInput, TransferUseCase},
         withdraw::{WithdrawInput, WithdrawUseCase},
@@ -14,8 +14,10 @@ use bank_service::{
         observability::metrics::Metrics,
         repositories::{
             sqlx_account_repository::SqlxAccountRepository,
+            sqlx_account_tx_repository::SqlxAccountTxRepository,
             sqlx_idempotency_repository::SqlxIdempotencyRepository,
             sqlx_transaction_repository::SqlxTransactionRepository,
+            sqlx_transaction_write_repository::SqlxTransactionWriteRepository,
         },
     },
 };
@@ -32,7 +34,7 @@ async fn test_concurrent_deposits() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -46,10 +48,11 @@ async fn test_concurrent_deposits() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(DepositUseCase::new(
@@ -106,7 +109,7 @@ async fn test_concurrent_withdrawals() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -121,10 +124,11 @@ async fn test_concurrent_withdrawals() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(WithdrawUseCase::new(
@@ -175,7 +179,7 @@ async fn test_concurrent_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -191,10 +195,11 @@ async fn test_concurrent_transfers() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(TransferUseCase::new(
@@ -257,7 +262,7 @@ async fn test_idempotency_duplicate_requests() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -270,10 +275,11 @@ async fn test_idempotency_duplicate_requests() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(DepositUseCase::new(
@@ -323,7 +329,7 @@ async fn test_deadlock_opposite_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -339,10 +345,11 @@ async fn test_deadlock_opposite_transfers() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(TransferUseCase::new(
@@ -409,7 +416,7 @@ async fn test_concurrent_idempotent_transfers() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -425,10 +432,11 @@ async fn test_concurrent_idempotent_transfers() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager,
         account_repo,
-        tx_repo,
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo,
         None,
-        Some(metrics),
+        Some(metrics as Arc<dyn MetricsPort>),
     ));
     let (cache, _container) = create_test_balance_cache().await;
     let use_case = Arc::new(TransferUseCase::new(
@@ -489,7 +497,7 @@ async fn test_concurrent_mixed_operations() {
     common::run_migrations(pool).await;
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
-    let tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
+    let _tx_repo = Arc::new(SqlxTransactionRepository::new(pool.clone()));
     let idem_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
     let db_tx_manager = Manager::new(pool.clone());
 
@@ -505,10 +513,11 @@ async fn test_concurrent_mixed_operations() {
     let tx_manager = Arc::new(TransactionManager::new(
         db_tx_manager.clone(),
         account_repo.clone(),
-        tx_repo.clone(),
+        Arc::new(SqlxAccountTxRepository),
+        Arc::new(SqlxTransactionWriteRepository),
         idem_repo.clone(),
         None,
-        Some(metrics.clone()),
+        Some(metrics.clone() as Arc<dyn MetricsPort>),
     ));
 
     let (cache, _container) = create_test_balance_cache().await;
@@ -516,10 +525,11 @@ async fn test_concurrent_mixed_operations() {
         Arc::new(TransactionManager::new(
             db_tx_manager.clone(),
             account_repo.clone(),
-            tx_repo.clone(),
+            Arc::new(SqlxAccountTxRepository),
+            Arc::new(SqlxTransactionWriteRepository),
             idem_repo.clone(),
             None,
-            Some(metrics.clone()),
+            Some(metrics.clone() as Arc<dyn MetricsPort>),
         )),
         Arc::new(cache.clone()) as Arc<dyn BalanceCachePort>,
     ));
@@ -529,10 +539,11 @@ async fn test_concurrent_mixed_operations() {
         Arc::new(TransactionManager::new(
             db_tx_manager.clone(),
             account_repo.clone(),
-            tx_repo.clone(),
+            Arc::new(SqlxAccountTxRepository),
+            Arc::new(SqlxTransactionWriteRepository),
             idem_repo.clone(),
             None,
-            Some(metrics.clone()),
+            Some(metrics.clone() as Arc<dyn MetricsPort>),
         )),
         Arc::new(cache.clone()) as Arc<dyn BalanceCachePort>,
     ));
