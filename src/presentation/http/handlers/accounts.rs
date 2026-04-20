@@ -459,3 +459,32 @@ pub async fn get_transactions(
         }),
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_user_id_from_valid_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-USER-ID", "user-123".parse().unwrap());
+        let result = extract_user_id(&headers);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().as_str(), "user-123");
+    }
+
+    #[test]
+    fn extract_user_id_missing_header_returns_error() {
+        let headers = axum::http::HeaderMap::new();
+        let result = extract_user_id(&headers);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_user_id_empty_header_returns_error() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("X-USER-ID", "".parse().unwrap());
+        let result = extract_user_id(&headers);
+        assert!(result.is_err());
+    }
+}
