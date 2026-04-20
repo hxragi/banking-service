@@ -175,13 +175,97 @@ fn default_otel_timeout_secs() -> u64 {
 }
 
 impl AppConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.internal_api_key == "default-insecure-change-me" {
+            tracing::warn!(
+                "INTERNAL_API_KEY is using the default insecure value. \
+                 Set INTERNAL_API_KEY environment variable in production."
+            );
+        }
+        Ok(())
+    }
+
     pub fn from_env() -> anyhow::Result<AppConfig> {
-        let _ = dotenvy::dotenv().ok();
+        match dotenvy::dotenv() {
+            Ok(_) => {}
+            Err(dotenvy::Error::Io(e)) => {
+                tracing::debug!("No .env file found: {}", e);
+            }
+            Err(e) => {
+                tracing::warn!("Error reading .env file: {}", e);
+            }
+        }
         let config = Config::builder()
             .add_source(Environment::default().separator("__"))
             .build()?;
 
         let app_config: AppConfig = config.try_deserialize()?;
         Ok(app_config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config(internal_api_key: &str) -> AppConfig {
+        AppConfig {
+            database: DatabaseConfig {
+                url: String::new(),
+                max_connections: default_max_connections(),
+                connection_timeout_secs: default_connection_timeout(),
+                default_statement_timeout_secs: default_statement_timeout(),
+            },
+            cache: CacheConfig {
+                balance_cache_ttl_secs: default_balance_cache_ttl_secs(),
+            },
+            dragonfly: DragonflyConfig {
+                url: default_dragonfly_url(),
+            },
+            server: ServerConfig {
+                grpc_port: default_grpc_port(),
+                http_port: default_http_port(),
+                grpc_host: default_grpc_host(),
+                http_host: default_http_host(),
+                metrics_addr: default_metrics_addr(),
+            },
+            kafka: KafkaConfig {
+                bootstrap_servers: String::new(),
+                producer_timeout_ms: default_kafka_producer_timeout(),
+                compression_type: default_kafka_compression(),
+                max_retries: default_kafka_max_retries(),
+                retry_backoff_ms: default_kafka_retry_backoff_ms(),
+                app_max_retries: default_kafka_app_max_retries(),
+                app_retry_base_delay_ms: default_kafka_app_retry_base_delay_ms(),
+                app_retry_max_delay_ms: default_kafka_app_retry_max_delay_ms(),
+            },
+            sentry: None,
+            telemetry: TelemetryConfig::default(),
+            internal_api_key: internal_api_key.to_string(),
+        }
+    }
+
+    #[test]
+    fn validate_warns_on_insecure_key() {
+        let config = test_config("default-insecure-change-me");
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_ok_on_secure_key() {
+        let config = test_config("my-secret-key");
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn default_internal_api_key_is_insecure() {
+        unsafe { std::env::remove_var("INTERNAL_API_KEY") };
+        let key = default_internal_api_key();
+        assert_eq!(key, "default-insecure-change-me");
+    }
+
+    #[test]
+    fn from_env_does_not_panic_without_env_file() {
+        let _ = dotenvy::dotenv();
     }
 }
