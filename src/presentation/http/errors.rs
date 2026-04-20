@@ -42,6 +42,12 @@ impl From<OperationError> for HttpError {
             OperationError::LockTimeout => {
                 HttpError::ResourceConflict("lock timeout - please retry".into())
             }
+            OperationError::Deadlock => {
+                HttpError::ResourceConflict("deadlock detected - please retry".into())
+            }
+            OperationError::SerializationFailure => {
+                HttpError::ResourceConflict("serialization failure - please retry".into())
+            }
             OperationError::UniqueConstraintViolation(msg) => {
                 HttpError::ResourceConflict(format!("conflict: {}", msg))
             }
@@ -51,8 +57,8 @@ impl From<OperationError> for HttpError {
                     "database temporarily unavailable - please retry".into(),
                 )
             }
-            OperationError::IdempotencyError => {
-                HttpError::ResourceConflict("idempotency key conflict".into())
+            OperationError::IdempotencyError { reason } => {
+                HttpError::ResourceConflict(format!("idempotency conflict: {}", reason))
             }
         }
     }
@@ -103,7 +109,7 @@ mod tests {
 
     #[test]
     fn idempotency_error_maps_to_conflict() {
-        let http_err: HttpError = OperationError::IdempotencyError.into();
+        let http_err: HttpError = OperationError::IdempotencyError { reason: "test".to_string() }.into();
         assert!(matches!(http_err, HttpError::ResourceConflict(_)));
     }
 

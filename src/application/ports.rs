@@ -28,6 +28,10 @@ pub enum AccountRepositoryError {
     OperationFailed { operation: String, reason: String },
     #[error("lock timeout")]
     LockTimeout,
+    #[error("deadlock detected")]
+    Deadlock,
+    #[error("serialization failure")]
+    SerializationFailure,
     #[error("unique constraint violation: {0}")]
     UniqueConstraintViolation(String),
     #[error("connection error: {0}")]
@@ -53,6 +57,10 @@ pub enum TransactionRepositoryError {
     TransactionFailed,
     #[error("lock timeout - operation should be retried")]
     LockTimeout,
+    #[error("deadlock detected")]
+    Deadlock,
+    #[error("serialization failure")]
+    SerializationFailure,
     #[error("unique constraint violation: {0}")]
     UniqueConstraintViolation(String),
     #[error("check constraint violation: {0}")]
@@ -252,18 +260,24 @@ pub enum OperationError {
     TierDowngradeNotAllowed { reason: String },
     #[error("lock timeout - operation should be retried")]
     LockTimeout,
+    #[error("deadlock detected - operation should be retried")]
+    Deadlock,
+    #[error("serialization failure - operation should be retried")]
+    SerializationFailure,
     #[error("unique constraint violation: {0}")]
     UniqueConstraintViolation(String),
     #[error("connection error: {0}")]
     ConnectionError(String),
-    #[error("idempotency error")]
-    IdempotencyError,
+    #[error("idempotency error: {reason}")]
+    IdempotencyError { reason: String },
 }
 
 impl From<AccountRepositoryError> for OperationError {
     fn from(err: AccountRepositoryError) -> Self {
         match err {
             AccountRepositoryError::LockTimeout => OperationError::LockTimeout,
+            AccountRepositoryError::Deadlock => OperationError::Deadlock,
+            AccountRepositoryError::SerializationFailure => OperationError::SerializationFailure,
             AccountRepositoryError::UniqueConstraintViolation(msg) => {
                 OperationError::UniqueConstraintViolation(msg)
             }
@@ -286,6 +300,8 @@ impl From<TransactionRepositoryError> for OperationError {
     fn from(err: TransactionRepositoryError) -> Self {
         match err {
             TransactionRepositoryError::LockTimeout => OperationError::LockTimeout,
+            TransactionRepositoryError::Deadlock => OperationError::Deadlock,
+            TransactionRepositoryError::SerializationFailure => OperationError::SerializationFailure,
             TransactionRepositoryError::UniqueConstraintViolation(msg) => {
                 OperationError::UniqueConstraintViolation(msg)
             }

@@ -131,7 +131,7 @@ impl From<TransactionError> for OperationError {
             },
             TransactionError::AccountRepository(repo_err) => repo_err.into(),
             TransactionError::TransactionRepository(tx_err) => tx_err.into(),
-            TransactionError::Idempotency(_) => OperationError::IdempotencyError,
+            TransactionError::Idempotency(_) => OperationError::IdempotencyError { reason: "key conflict".to_string() },
         }
     }
 }
@@ -375,6 +375,8 @@ where
                     &e,
                     TransactionError::AccountUnavailable
                         | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
+                        | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
+                        | TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure)
                 );
 
                 if is_transient && attempt < max_attempts {
@@ -672,6 +674,8 @@ mod tests {
         let transient_errors = vec![
             TransactionError::AccountUnavailable,
             TransactionError::AccountRepository(AccountRepositoryError::LockTimeout),
+            TransactionError::AccountRepository(AccountRepositoryError::Deadlock),
+            TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure),
         ];
 
         for err in transient_errors {
@@ -679,6 +683,8 @@ mod tests {
                 &err,
                 TransactionError::AccountUnavailable
                     | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
+                    | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
+                    | TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure)
             );
             assert!(is_transient, "expected {:?} to be transient", err);
         }
@@ -848,6 +854,20 @@ mod tests {
     }
 
     #[test]
+    fn converts_deadlock_to_operation_error() {
+        let tx_err = TransactionError::AccountRepository(AccountRepositoryError::Deadlock);
+        let op_err: OperationError = tx_err.into();
+        assert!(matches!(op_err, OperationError::Deadlock));
+    }
+
+    #[test]
+    fn converts_serialization_failure_to_operation_error() {
+        let tx_err = TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure);
+        let op_err: OperationError = tx_err.into();
+        assert!(matches!(op_err, OperationError::SerializationFailure));
+    }
+
+    #[test]
     fn converts_constraint_violation_to_operation_error() {
         let tx_err = TransactionError::AccountRepository(
             AccountRepositoryError::UniqueConstraintViolation("duplicate".to_string()),
@@ -898,7 +918,14 @@ mod tests {
     fn converts_idempotency_error_to_operation_error() {
         let tx_err = TransactionError::Idempotency(IdempotencyError::IdempotencyFailed);
         let op_err: OperationError = tx_err.into();
-        assert!(matches!(op_err, OperationError::IdempotencyError));
+        assert!(matches!(op_err, OperationError::IdempotencyError { .. }));
+    }
+
+    #[test]
+    fn idempotency_error_contains_reason() {
+        let op_err = OperationError::IdempotencyError { reason: "key conflict".to_string() };
+        let msg = op_err.to_string();
+        assert!(msg.contains("key conflict"));
     }
 
     #[test]
