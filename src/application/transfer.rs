@@ -73,11 +73,18 @@ impl TransferUseCase {
                         reason: "invalid operation result".to_string(),
                     }
                 })?;
+
                 self.balance_cache
-                    .invalidate(&transfer_result.from_account.id())
+                    .set(
+                        transfer_result.from_account.id(),
+                        transfer_result.from_account.balance().as_u64(),
+                    )
                     .await;
                 self.balance_cache
-                    .invalidate(&transfer_result.to_account.id())
+                    .set(
+                        transfer_result.to_account.id(),
+                        transfer_result.from_account.balance().as_u64(),
+                    )
                     .await;
                 tracing::info!(
                     from = %transfer_result.from_account.number(),

@@ -66,7 +66,11 @@ impl WithdrawUseCase {
                     .ok_or_else(|| OperationError::Unavailable {
                         reason: "invalid operation result".to_string(),
                     })?;
-                self.balance_cache.invalidate(&account.id()).await;
+
+                self.balance_cache
+                    .set(account.id(), account.balance().as_u64())
+                    .await;
+
                 tracing::info!(account_number = %account.number(), new_balance = %account.balance(), "withdraw completed");
                 Ok(account)
             }

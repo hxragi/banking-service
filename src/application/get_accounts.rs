@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     application::ports::{AccountRepository, BalanceCachePort, OperationError},
-    domain::{account::Account, balance::Balance, owner::Owner},
+    domain::{account::Account, owner::Owner},
 };
 
 pub struct GetAccountsInput {
@@ -29,30 +29,13 @@ impl GetAccountsUseCase {
         let GetAccountsInput { owner } = input;
         let accounts = self.account_repository.find_by_owner(&owner).await?;
 
-        let mut final_accounts = Vec::with_capacity(accounts.len());
-        for account in accounts {
-            let cached_balance = self.balance_cache.get(&account.id()).await;
-
-            let balance = match cached_balance {
-                Some(cached) => cached,
-                None => {
-                    let db_balance = account.balance().as_u64();
-                    self.balance_cache.set(account.id(), db_balance).await;
-                    db_balance
-                }
-            };
-
-            let final_account = Account::new(
-                account.id(),
-                account.number().clone(),
-                account.owner().clone(),
-                Balance::new(balance),
-                account.created_at(),
-            );
-            final_accounts.push(final_account);
+        for account in &accounts {
+            self.balance_cache
+                .set(account.id(), account.balance().as_u64())
+                .await;
         }
 
-        Ok(final_accounts)
+        Ok(accounts)
     }
 }
 

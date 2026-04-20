@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     application::ports::{AccountRepository, BalanceCachePort, OperationError},
-    domain::{account::Account, account_number::AccountNumber, balance::Balance},
+    domain::{account::Account, account_number::AccountNumber},
 };
 
 pub struct GetAccountInput {
@@ -36,26 +36,11 @@ impl GetAccountUseCase {
                 resource: "account".to_string(),
             })?;
 
-        let cached_balance = self.balance_cache.get(&account.id()).await;
+        self.balance_cache
+            .set(account.id(), account.balance().as_u64())
+            .await;
 
-        let balance = match cached_balance {
-            Some(cached) => cached,
-            None => {
-                let db_balance = account.balance().as_u64();
-                self.balance_cache.set(account.id(), db_balance).await;
-                db_balance
-            }
-        };
-
-        let final_account = Account::new(
-            account.id(),
-            account.number().clone(),
-            account.owner().clone(),
-            Balance::new(balance),
-            account.created_at(),
-        );
-
-        Ok(final_account)
+        Ok(account)
     }
 }
 
