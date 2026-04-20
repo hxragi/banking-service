@@ -197,6 +197,9 @@ pub enum ExternalEventError {
     #[error("invalid amount: {0}")]
     InvalidAmount(String),
 
+    #[error("invalid account number format: {0}")]
+    InvalidAccountFormat(String),
+
     #[error("account temporarily unavailable")]
     AccountUnavailable,
 
@@ -254,9 +257,9 @@ impl ExternalEventHandlerImpl {
         user_id: &str,
     ) -> Result<AccountNumber, ExternalEventError> {
         if let Some(account_number) = explicit_account {
-            AccountNumber::new(account_number).map_err(|_| ExternalEventError::AccountNotFound {
-                user_id: user_id.to_string(),
-            })
+            AccountNumber::new(account_number).map_err(|_| ExternalEventError::InvalidAccountFormat(
+                account_number.to_string(),
+            ))
         } else {
             self.find_account_by_user_id(user_id).await
         }
@@ -1048,5 +1051,11 @@ mod tests {
 
         let err = ExternalEventError::InvalidAmount("invalid".to_string());
         assert!(err.to_string().contains("invalid"));
+    }
+
+    #[test]
+    fn invalid_account_format_error_display() {
+        let err = ExternalEventError::InvalidAccountFormat("bad-number".to_string());
+        assert!(err.to_string().contains("bad-number"));
     }
 }
