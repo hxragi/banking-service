@@ -6,10 +6,12 @@ use base64::Engine;
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
-    consumer::{Consumer, StreamConsumer},
+    consumer::{CommitMode, Consumer, StreamConsumer},
     message::{BorrowedMessage, Headers},
     producer::{FutureProducer, Producer},
 };
+use redis::aio::MultiplexedConnection;
+use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -30,9 +32,21 @@ const DLQ_TOPIC: &str = "bank.transaction.dlq";
 const RETRY_KEY_PREFIX: &str = "kafka:retry:";
 const RETRY_KEY_TTL_SECS: u64 = 86400;
 
+#[derive(Debug, Error)]
+pub enum RetryTrackerError {
+    #[error("redis unavailable: {0}")]
+    RedisUnavailable(String),
+}
+
+impl RetryTrackerError {
+    pub fn is_connection_error(&self) -> bool {
+        matches!(self, RetryTrackerError::RedisUnavailable(_))
+    }
+}
+
 #[derive(Clone)]
 pub struct RetryTracker {
-    redis: redis::aio::MultiplexedConnection,
+    redis: MultiplexedConnection,
 }
 
 impl RetryTracker {
@@ -42,50 +56,84 @@ impl RetryTracker {
         Ok(Self { redis })
     }
 
+    pub async fn health_check(&self) -> Result<(), RetryTrackerError> {
+        let mut conn = self.redis.clone();
+        redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .map(|_| ())
+            .map_err(|e| RetryTrackerError::RedisUnavailable(e.to_string()))
+    }
+
     fn retry_key(&self, topic: &str, partition: i32, offset: i64) -> String {
         format!("{}{}:{}:{}", RETRY_KEY_PREFIX, topic, partition, offset)
     }
 
-    pub async fn get_retry_count(&self, topic: &str, partition: i32, offset: i64) -> u32 {
+    pub async fn get_retry_count(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<u32, RetryTrackerError> {
         let key = self.retry_key(topic, partition, offset);
         let mut conn = self.redis.clone();
-        match redis::AsyncCommands::get::<_, Option<u32>>(&mut conn, key).await {
-            Ok(Some(count)) => count,
-            Ok(None) => 0,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to get retry count, assuming 0");
-                0
-            }
-        }
+
+        redis::AsyncCommands::get::<_, Option<u32>>(&mut conn, key)
+            .await
+            .map(|opt| opt.unwrap_or(0))
+            .map_err(|e| {
+                tracing::error!(error = %e, topic, partition, offset, "redis unavailable while getting retry count");
+                RetryTrackerError::RedisUnavailable(e.to_string())
+            })
     }
 
-    pub async fn increment_retry(&self, topic: &str, partition: i32, offset: i64) {
+    pub async fn increment_retry(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<(), RetryTrackerError> {
         let key = self.retry_key(topic, partition, offset);
         let mut conn = self.redis.clone();
 
-        let result: redis::RedisResult<u32> = async move {
-            let new_count: u32 = redis::cmd("INCR").arg(&key).query_async(&mut conn).await?;
+        async move {
+            let new_count: u32 = redis::cmd("INCR")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| RetryTrackerError::RedisUnavailable(e.to_string()))?;
 
             if new_count == 1 {
-                let _: () = redis::cmd("EXPIRE")
+                redis::cmd("EXPIRE")
                     .arg(&key)
                     .arg(RETRY_KEY_TTL_SECS)
-                    .query_async(&mut conn)
-                    .await?;
+                    .query_async::<()>(&mut conn)
+                    .await
+                    .map_err(|e| {
+                        tracing::warn!(error = %e, key = %key, "failed to set ttl on retry key - key may accumulate");
+                    })
+                    .ok();
             }
-            Ok(new_count)
-        }
-        .await;
 
-        if let Err(e) = result {
-            tracing::warn!(error = %e, "Failed to increment retry count");
+            Ok(())
         }
+        .await
     }
 
-    pub async fn clear_retry(&self, topic: &str, partition: i32, offset: i64) {
+    pub async fn clear_retry(
+        &self,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> Result<(), RetryTrackerError> {
         let key = self.retry_key(topic, partition, offset);
         let mut conn = self.redis.clone();
-        let _: redis::RedisResult<()> = redis::AsyncCommands::del(&mut conn, key).await;
+        redis::AsyncCommands::del(&mut conn, key)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, topic, offset, "redis unavailable while clearing retry count");
+                RetryTrackerError::RedisUnavailable(e.to_string())
+            })
     }
 }
 
@@ -504,22 +552,46 @@ impl KafkaEventConsumer {
 
                             match Self::process_message_with_handler(handler, &msg).await {
                                 Ok(()) => {
-                                    retry_tracker.clear_retry(&topic, partition, offset).await;
-
-                                    if let Err(e) = consumer.commit_message(&msg, rdkafka::consumer::CommitMode::Sync) {
-                                        tracing::error!(error = %e, topic, partition, offset, "Failed to commit offset after successful processing - message may be redelivered on restart");
-                                    } else {
-                                        tracing::debug!(topic, partition, offset, "Offset committed successfully after processing");
+                                    match retry_tracker.clear_retry(&topic, partition, offset).await {
+                                        Ok(()) => {
+                                            if let Err(e) = consumer.commit_message(&msg, CommitMode::Sync) {
+                                                tracing::error!(error = %e, topic, partition, offset, "failed to commit offset after successful processing - message may be redelivered on restart");
+                                            } else {
+                                                tracing::debug!(topic, partition, offset, "offset committed successfully after processing");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                topic,
+                                                partition,
+                                                offset,
+                                                "redis unavailable after successful processing - offset not committed. message will be redelivered"
+                                            );
+                                        }
                                     }
                                     Ok(())
                                 }
                                 Err(error_reason) => {
-                                    let redis_retry_count = retry_tracker.get_retry_count(&topic, partition, offset).await;
+                                    let redis_retry_count = match retry_tracker.get_retry_count(&topic, partition, offset).await {
+                                        Ok(count) => count,
+                                        Err(e) => {
+                                            tracing::error!(
+                                                error = %e,
+                                                topic,
+                                                partition,
+                                                offset,
+                                                "redis unavailable during retry tracking - offset not committed"
+                                            );
+                                            return Ok(());
+                                        }
+                                    };
+
                                     let header_retry_count = get_retry_count_from_message(&msg);
                                     let retry_count = redis_retry_count.max(header_retry_count);
 
                                     if retry_count >= MAX_RETRIES {
-                                        tracing::warn!(topic, partition, offset, retry_count, "Max retries exceeded, sending to DLQ");
+                                        tracing::warn!(topic, partition, offset, retry_count, "max retries exceeded, sending to dlq");
 
                                         if let Some(payload) = msg.payload() {
                                             dlq_producer.send_to_dlq(
@@ -532,23 +604,31 @@ impl KafkaEventConsumer {
                                             ).await;
                                         }
 
-                                        if let Err(e) = consumer.commit_message(&msg, rdkafka::consumer::CommitMode::Sync) {
-                                            tracing::error!(error = %e, topic, partition, offset, "Failed to commit offset after DLQ");
+                                        if let Err(e) = consumer.commit_message(&msg, CommitMode::Sync) {
+                                            tracing::error!(error = %e, topic, partition, offset, "failed to commit offset after dlq");
                                         } else {
-                                            tracing::info!(topic, partition, offset, "Offset committed after sending to DLQ");
+                                            tracing::info!(topic, partition, offset, "offset committed after sending to dlq");
                                         }
 
-                                        retry_tracker.clear_retry(&topic, partition, offset).await;
+                                        if let Err(e) = retry_tracker.clear_retry(&topic, partition, offset).await {
+                                            tracing::warn!(error = %e, topic, partition, offset, "failed to clear retry count after dlq - key will expire via ttl");
+                                        }
                                     } else {
-                                        retry_tracker.increment_retry(&topic, partition, offset).await;
-                                        tracing::warn!(topic, partition, offset, retry_count = retry_count + 1, "Message processing failed, offset NOT committed - will be redelivered for retry");
+                                        match retry_tracker.increment_retry(&topic, partition, offset).await {
+                                            Ok(()) => {
+                                                tracing::warn!(topic, partition, offset, retry_count = retry_count + 1, "message processing failed, offset not committed - will be redelivered for retry");
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(error = %e, topic, partition, offset, "redis unavailable during retry increment - offset not committed");
+                                            }
+                                        }
                                     }
                                     Ok(())
                                 }
                             }
                         }
                         Ok(Err(e)) => {
-                            tracing::error!(error = %e, "Kafka message error");
+                            tracing::error!(error = %e, "kafka message error");
                             Err(e)
                         }
                         Err(_) => {
@@ -557,13 +637,13 @@ impl KafkaEventConsumer {
                     }
                 } => {
                     if let Err(e) = result {
-                        tracing::error!(error = %e, "Consumer error");
+                        tracing::error!(error = %e, "consumer error");
                     }
                 }
             }
         }
 
-        tracing::info!("Kafka consumer stopped");
+        tracing::info!("kafka consumer stopped");
     }
 
     async fn process_message_with_handler(
@@ -591,16 +671,16 @@ impl KafkaEventConsumer {
         if let Some(parent_ctx) = parent_span_context {
             let parent_cx = opentelemetry::Context::new().with_remote_span_context(parent_ctx);
             span.set_parent(parent_cx);
-            tracing::debug!("Trace context extracted from Kafka headers");
+            tracing::debug!("trace context extracted from Kafka headers");
         } else {
-            tracing::debug!("No trace context found in Kafka headers, creating new trace");
+            tracing::debug!("no trace context found in Kafka headers, creating new trace");
         }
 
         async move {
             let payload = match msg.payload() {
                 Some(p) => p,
                 None => {
-                    tracing::warn!("Empty message payload");
+                    tracing::warn!("empty message payload");
                     return Ok(());
                 }
             };
@@ -608,19 +688,19 @@ impl KafkaEventConsumer {
             let payload_str = match std::str::from_utf8(payload) {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::error!(error = %e, "Invalid UTF-8 in message payload");
+                    tracing::error!(error = %e, "invalid UTF-8 in message payload");
                     return Ok(());
                 }
             };
 
-            tracing::debug!("Processing message");
+            tracing::debug!("processing message");
 
             let result = match topic {
                 "gov.fine.created" => {
                     match serde_json::from_str::<GovFineCreatedEvent>(payload_str) {
                         Ok(event) => handler.handle_fine_created(event).await,
                         Err(e) => {
-                            tracing::error!(error = %e, "Failed to parse gov.fine.created event");
+                            tracing::error!(error = %e, "failed to parse gov.fine.created event");
                             return Ok(());
                         }
                     }
@@ -629,7 +709,7 @@ impl KafkaEventConsumer {
                     match serde_json::from_str::<MarketOrderPaidEvent>(payload_str) {
                         Ok(event) => handler.handle_order_paid(event).await,
                         Err(e) => {
-                            tracing::error!(error = %e, "Failed to parse market.order.paid event");
+                            tracing::error!(error = %e, "failed to parse market.order.paid event");
                             return Ok(());
                         }
                     }
@@ -637,26 +717,26 @@ impl KafkaEventConsumer {
                 "donate.topup" => match serde_json::from_str::<DonateTopupEvent>(payload_str) {
                     Ok(event) => handler.handle_donate_topup(event).await,
                     Err(e) => {
-                        tracing::error!(error = %e, "Failed to parse donate.topup event");
+                        tracing::error!(error = %e, "failed to parse donate.topup event");
                         return Ok(());
                     }
                 },
                 _ => {
-                    tracing::warn!("Unknown topic, skipping");
+                    tracing::warn!("unknown topic, skipping");
                     return Ok(());
                 }
             };
 
             match result {
                 Ok(()) => {
-                    tracing::info!("Event processed successfully");
+                    tracing::info!("event processed successfully");
                     Ok(())
                 }
                 Err(e) => {
                     let error_reason = e.to_string();
                     tracing::error!(
                         error = %error_reason,
-                        "Failed to process event - will be redelivered"
+                        "failed to process event - will be redelivered"
                     );
                     Err(error_reason)
                 }
@@ -693,7 +773,7 @@ pub async fn check_kafka_connectivity(
         .set("request.timeout.ms", "5000")
         .set("socket.timeout.ms", "5000")
         .create()
-        .map_err(|e| anyhow::anyhow!("Failed to create connectivity check client: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("failed to create connectivity check client: {}", e))?;
 
     tokio::time::timeout(timeout, async {
         producer
@@ -701,8 +781,8 @@ pub async fn check_kafka_connectivity(
             .fetch_metadata(None, Duration::from_secs(5))
     })
     .await
-    .map_err(|_| anyhow::anyhow!("Kafka connectivity check timed out"))?
-    .map_err(|e| anyhow::anyhow!("Kafka broker unavailable: {}", e))?;
+    .map_err(|_| anyhow::anyhow!("kafka connectivity check timed out"))?
+    .map_err(|e| anyhow::anyhow!("kafka broker unavailable: {}", e))?;
 
     Ok(())
 }
@@ -715,6 +795,13 @@ pub async fn start_consumer_with_retry(
     retry_tracker: Arc<RetryTracker>,
     dlq_producer: Arc<DlqProducer>,
 ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
+    if let Err(e) = retry_tracker.health_check().await {
+        anyhow::bail!(
+            "redis unavailable at startup - cannot safely start consumer without retry tracking: {}",
+            e
+        )
+    }
+
     match check_kafka_connectivity(&config.bootstrap_servers, 10).await {
         Ok(()) => {
             tracing::info!("Kafka broker is available, starting consumer immediately");
@@ -734,7 +821,7 @@ pub async fn start_consumer_with_retry(
             tracing::warn!(
                 error = %e,
                 bootstrap_servers = %config.bootstrap_servers,
-                "Kafka broker unavailable at startup, starting in degraded mode. Consumer will retry automatically."
+                "kafka broker unavailable at startup, starting in degraded mode"
             );
         }
     }
@@ -752,43 +839,53 @@ pub async fn start_consumer_with_retry(
                 cmd = shutdown_rx.recv() => {
                     match cmd {
                         Some(ConsumerCommand::Shutdown) | None => {
-                            tracing::info!("Received shutdown command during Kafka retry loop");
+                            tracing::info!("received shutdown command during kafka retry loop");
                             break;
                         }
                     }
                 }
             }
 
-            match check_kafka_connectivity(&bootstrap_servers, 10).await {
-                Ok(()) => {
-                    tracing::info!("Kafka broker is now available, starting consumer");
+            let kafka_ok = check_kafka_connectivity(&bootstrap_servers, 10)
+                .await
+                .is_ok();
+            let redis_ok = retry_tracker_clone.health_check().await.is_ok();
 
-                    let (_new_shutdown_tx, new_shutdown_rx) = mpsc::channel::<ConsumerCommand>(1);
+            if kafka_ok && redis_ok {
+                tracing::info!("kafka broker and redis are now available, starting consumer");
 
-                    let _ = consumer_started_tx.send(()).await;
+                let (_new_shutdown_tx, new_shutdown_rx) = mpsc::channel::<ConsumerCommand>(1);
 
-                    match KafkaEventConsumer::new(
-                        &config,
-                        retry_handler.clone(),
-                        new_shutdown_rx,
-                        retry_tracker_clone.clone(),
-                        dlq_producer_clone.clone(),
-                    ) {
-                        Ok(consumer) => {
-                            consumer.run().await;
-                            tracing::info!("Kafka consumer stopped");
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::error!(error = %e, "Failed to create Kafka consumer even after connectivity check succeeded");
-                            continue;
-                        }
+                let _ = consumer_started_tx.send(()).await;
+
+                match KafkaEventConsumer::new(
+                    &config,
+                    retry_handler.clone(),
+                    new_shutdown_rx,
+                    retry_tracker_clone.clone(),
+                    dlq_producer_clone.clone(),
+                ) {
+                    Ok(consumer) => {
+                        consumer.run().await;
+                        tracing::info!("kafka consumer stopped");
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to create kafka consumer even after connectivity check succeeded");
+                        continue;
                     }
                 }
-                Err(e) => {
+            } else {
+                if !kafka_ok {
                     tracing::debug!(
-                        error = %e,
-                        "Kafka broker still unavailable, will retry in {} seconds",
+                        "kafka broker still unavailable, will retry in {} seconds",
+                        check_interval_secs
+                    );
+                }
+
+                if !redis_ok {
+                    tracing::debug!(
+                        "redis still unavailable, will retry in {} seconds",
                         check_interval_secs
                     );
                 }
@@ -798,7 +895,7 @@ pub async fn start_consumer_with_retry(
 
     tokio::spawn(async move {
         if consumer_started_rx.recv().await.is_some() {
-            tracing::info!("Consumer started successfully in background after retry");
+            tracing::info!("consumer started successfully in background after retry");
         }
     });
 
@@ -1056,5 +1153,18 @@ mod tests {
     fn invalid_account_format_error_display() {
         let err = ExternalEventError::InvalidAccountFormat("bad-number".to_string());
         assert!(err.to_string().contains("bad-number"));
+    }
+
+    #[test]
+    fn retry_tracker_error_is_connection_error() {
+        let err = RetryTrackerError::RedisUnavailable("connection refused".to_string());
+        assert!(err.is_connection_error());
+    }
+
+    #[test]
+    fn retry_tracker_error_display() {
+        let err = RetryTrackerError::RedisUnavailable("timeout".to_string());
+        assert!(err.to_string().contains("Redis unavailable"));
+        assert!(err.to_string().contains("timeout"));
     }
 }
