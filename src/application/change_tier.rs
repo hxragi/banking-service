@@ -100,6 +100,21 @@ mod tests {
         ) -> Result<Vec<Account>, AccountRepositoryError> {
             Ok(self.accounts.lock().unwrap().clone())
         }
+
+        async fn create_within_limit(
+            &self,
+            account: &Account,
+            limit: Option<u64>,
+        ) -> Result<(), AccountRepositoryError> {
+            let owner = account.owner();
+            let count = self.count_by_owner(owner).await?;
+            if let Some(limit) = limit
+                && count >= limit
+            {
+                return Err(AccountRepositoryError::LimitExceeded);
+            }
+            self.create(account).await
+        }
     }
 
     struct FakeOwnerTierRepository {
@@ -416,6 +431,21 @@ mod tests {
                     .filter(|a| a.owner() == owner)
                     .cloned()
                     .collect())
+            }
+
+            async fn create_within_limit(
+                &self,
+                account: &Account,
+                limit: Option<u64>,
+            ) -> Result<(), AccountRepositoryError> {
+                let owner = account.owner();
+                let count = self.count_by_owner(owner).await?;
+                if let Some(limit) = limit
+                    && count >= limit
+                {
+                    return Err(AccountRepositoryError::LimitExceeded);
+                }
+                self.create(account).await
             }
         }
 

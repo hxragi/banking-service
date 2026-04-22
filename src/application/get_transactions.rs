@@ -123,6 +123,21 @@ mod tests {
                 reason: "not implemented in test".to_string(),
             })
         }
+
+        async fn create_within_limit(
+            &self,
+            account: &Account,
+            limit: Option<u64>,
+        ) -> Result<(), AccountRepositoryError> {
+            let owner = account.owner();
+            let count = self.count_by_owner(owner).await?;
+            if let Some(limit) = limit
+                && count >= limit
+            {
+                return Err(AccountRepositoryError::LimitExceeded);
+            }
+            self.create(account).await
+        }
     }
 
     struct FakeTransactionRepository {

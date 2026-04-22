@@ -91,6 +91,21 @@ impl AccountRepository for MockAccountRepository {
         self.find_by_owner_result.clone()?;
         Ok(self.accounts.lock().await.clone())
     }
+
+    async fn create_within_limit(
+        &self,
+        account: &Account,
+        limit: Option<u64>,
+    ) -> Result<(), AccountRepositoryError> {
+        let owner = account.owner();
+        let count = self.count_by_owner(owner).await?;
+        if let Some(limit) = limit
+            && count >= limit
+        {
+            return Err(AccountRepositoryError::LimitExceeded);
+        }
+        self.create(account).await
+    }
 }
 
 pub struct MockTransactionRepository {

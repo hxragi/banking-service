@@ -41,21 +41,15 @@ impl CreateAccountUseCase {
         let tier = owner_tier.tier();
         let limit = tier.account_limit();
 
-        let count = self.account_repository.count_by_owner(&owner).await?;
-
-        if let Some(limit) = limit
-            && count >= limit
-        {
-            return Err(OperationError::TierLimitExceeded);
-        }
-
         let number = self.account_number_generator.generate().await?;
         let id = Uuid::new_v4();
         let balance = Balance::zero();
         let created_at = OffsetDateTime::now_utc();
         let account = Account::new(id, number, owner, balance, created_at);
 
-        self.account_repository.create(&account).await?;
+        self.account_repository
+            .create_within_limit(&account, limit)
+            .await?;
 
         Ok(account)
     }

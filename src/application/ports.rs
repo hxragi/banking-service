@@ -36,6 +36,8 @@ pub enum AccountRepositoryError {
     UniqueConstraintViolation(String),
     #[error("connection error: {0}")]
     ConnectionError(String),
+    #[error("limit exceeded")]
+    LimitExceeded,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -93,6 +95,11 @@ pub trait AccountRepository: Send + Sync {
         number: &AccountNumber,
     ) -> Result<Option<Account>, AccountRepositoryError>;
     async fn find_by_owner(&self, owner: &Owner) -> Result<Vec<Account>, AccountRepositoryError>;
+    async fn create_within_limit(
+        &self,
+        account: &Account,
+        limit: Option<u64>,
+    ) -> Result<(), AccountRepositoryError>;
 }
 
 #[async_trait]
@@ -293,6 +300,7 @@ impl From<AccountRepositoryError> for OperationError {
                 };
                 OperationError::RepositoryError { operation: op }
             }
+            AccountRepositoryError::LimitExceeded => OperationError::TierLimitExceeded,
         }
     }
 }
