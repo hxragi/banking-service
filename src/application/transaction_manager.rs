@@ -48,14 +48,6 @@ impl RetryConfig {
             max_delay_ms,
         }
     }
-
-    pub fn from_app_config(max_retries: u32, base_delay_ms: u64, max_delay_ms: u64) -> Self {
-        Self {
-            max_attempts: max_retries,
-            base_delay_ms,
-            max_delay_ms,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

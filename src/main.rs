@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("Kafka event publisher initialized");
 
-    let retry_config = RetryConfig::from_app_config(
+    let retry_config = RetryConfig::new(
         config.transaction_retry.max_attempts,
         config.transaction_retry.base_delay_ms,
         config.transaction_retry.max_delay_ms,
