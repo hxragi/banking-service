@@ -74,18 +74,26 @@ where
                     }
                 })?;
 
-                self.balance_cache
+                if let Err(e) = self
+                    .balance_cache
                     .set(
                         transfer_result.from_account.id(),
                         transfer_result.from_account.balance().as_u64(),
                     )
-                    .await;
-                self.balance_cache
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to set balance in cache")
+                };
+                if let Err(e) = self
+                    .balance_cache
                     .set(
                         transfer_result.to_account.id(),
                         transfer_result.from_account.balance().as_u64(),
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to set balance in cache")
+                };
                 tracing::info!(
                     from = %transfer_result.from_account.number(),
                     to = %transfer_result.to_account.number(),

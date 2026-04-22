@@ -147,14 +147,19 @@ pub trait OwnerTierRepository: Send + Sync {
     ) -> Result<OwnerTier, OwnerTierRepositoryError>;
 }
 
-#[async_trait]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
+pub enum BalanceCacheError {
+    #[error("cache unavailable: {0}")]
+    Unavailable(String),
+    #[error("cache operation failed: {0}")]
+    OperationFailed(String),
+}
+
+#[async_trait::async_trait]
 pub trait BalanceCachePort: Send + Sync {
-    #[must_use = "cache operations can fail silently if ignored"]
-    async fn get(&self, account_id: &Uuid) -> Option<u64>;
-    #[must_use = "cache operations can fail silently if ignored"]
-    async fn set(&self, account_id: Uuid, balance: u64);
-    #[must_use = "cache operations can fail silently if ignored"]
-    async fn invalidate(&self, account_id: &Uuid);
+    async fn get(&self, account_id: &Uuid) -> Result<Option<u64>, BalanceCacheError>;
+    async fn set(&self, account_id: Uuid, balance: u64) -> Result<(), BalanceCacheError>;
+    async fn invalidate(&self, account_id: &Uuid) -> Result<(), BalanceCacheError>;
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]

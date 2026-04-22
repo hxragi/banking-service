@@ -30,9 +30,13 @@ impl GetAccountsUseCase {
         let accounts = self.account_repository.find_by_owner(&owner).await?;
 
         for account in &accounts {
-            self.balance_cache
+            if let Err(e) = self
+                .balance_cache
                 .set(account.id(), account.balance().as_u64())
-                .await;
+                .await
+            {
+                tracing::warn!(error = %e, "failed to set balance in cache")
+            };
         }
 
         Ok(accounts)
@@ -108,11 +112,15 @@ mod tests {
             .await;
 
         assert_eq!(
-            BalanceCachePort::get(cache_arc.as_ref(), &id1).await,
+            BalanceCachePort::get(cache_arc.as_ref(), &id1)
+                .await
+                .unwrap(),
             Some(300)
         );
         assert_eq!(
-            BalanceCachePort::get(cache_arc.as_ref(), &id2).await,
+            BalanceCachePort::get(cache_arc.as_ref(), &id2)
+                .await
+                .unwrap(),
             Some(400)
         );
     }

@@ -67,9 +67,13 @@ where
                         reason: "invalid operation result".to_string(),
                     })?;
 
-                self.balance_cache
+                if let Err(e) = self
+                    .balance_cache
                     .set(account.id(), account.balance().as_u64())
-                    .await;
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to set balance in cache")
+                };
 
                 tracing::info!(account_number = %account.number(), new_balance = %account.balance(), "withdraw completed");
                 Ok(account)

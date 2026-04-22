@@ -5,14 +5,8 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use uuid::Uuid;
 
-use crate::application::ports::BalanceCachePort;
+use crate::application::ports::{BalanceCacheError, BalanceCachePort};
 use crate::infrastructure::observability::metrics::Metrics;
-
-#[derive(Debug)]
-enum CacheError {
-    Unavailable,
-    OperationFailed,
-}
 
 #[derive(Clone)]
 pub struct BalanceCache {
@@ -41,7 +35,7 @@ impl BalanceCache {
         format!("b:{account_id}")
     }
 
-    async fn try_get(&self, account_id: &Uuid) -> Result<Option<u64>, CacheError> {
+    async fn try_get(&self, account_id: &Uuid) -> Result<Option<u64>, BalanceCacheError> {
         let key = self.key(account_id);
         let mut conn = (*self.redis).clone();
 
@@ -58,49 +52,42 @@ impl BalanceCache {
                 }
                 Ok(None)
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to get balance from cache");
-                Err(CacheError::Unavailable)
-            }
+            Err(e) => Err(BalanceCacheError::Unavailable(e.to_string())),
         }
     }
 
-    async fn try_set(&self, account_id: Uuid, balance: u64) -> Result<(), CacheError> {
+    async fn try_set(&self, account_id: Uuid, balance: u64) -> Result<(), BalanceCacheError> {
         let key = self.key(&account_id);
         let ttl_secs = self.default_ttl.as_secs();
         let mut conn = (*self.redis).clone();
 
-        match conn.set_ex(key, balance, ttl_secs).await {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to set balance in cache");
-                Err(CacheError::OperationFailed)
-            }
-        }
+        conn.set_ex(key, balance, ttl_secs)
+            .await
+            .map_err(|e| BalanceCacheError::OperationFailed(e.to_string()))
     }
 
-    async fn try_invalidate(&self, account_id: &Uuid) {
+    async fn try_invalidate(&self, account_id: &Uuid) -> Result<(), BalanceCacheError> {
         let key = self.key(account_id);
         let mut conn = (*self.redis).clone();
 
-        if let Err(e) = conn.del::<_, ()>(key).await {
-            tracing::warn!(error = %e, "failed to invalidate balance in cache");
-        }
+        conn.del::<_, ()>(key)
+            .await
+            .map_err(|e| BalanceCacheError::OperationFailed(e.to_string()))
     }
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 impl BalanceCachePort for BalanceCache {
-    async fn get(&self, account_id: &Uuid) -> Option<u64> {
-        self.try_get(account_id).await.unwrap_or_default()
+    async fn get(&self, account_id: &Uuid) -> Result<Option<u64>, BalanceCacheError> {
+        self.try_get(account_id).await
     }
 
-    async fn set(&self, account_id: Uuid, balance: u64) {
-        let _ = self.try_set(account_id, balance).await;
+    async fn set(&self, account_id: Uuid, balance: u64) -> Result<(), BalanceCacheError> {
+        self.try_set(account_id, balance).await
     }
 
-    async fn invalidate(&self, account_id: &Uuid) {
-        self.try_invalidate(account_id).await;
+    async fn invalidate(&self, account_id: &Uuid) -> Result<(), BalanceCacheError> {
+        self.try_invalidate(account_id).await
     }
 }
 
@@ -117,12 +104,14 @@ mod tests {
         let account_id = Uuid::new_v4();
         let balance = 1000u64;
 
-        let result = BalanceCachePort::get(&cache, &account_id).await;
+        let result = BalanceCachePort::get(&cache, &account_id).await.unwrap();
         assert_eq!(result, None);
 
-        BalanceCachePort::set(&cache, account_id, balance).await;
+        BalanceCachePort::set(&cache, account_id, balance)
+            .await
+            .unwrap();
 
-        let result = BalanceCachePort::get(&cache, &account_id).await;
+        let result = BalanceCachePort::get(&cache, &account_id).await.unwrap();
         assert_eq!(result, Some(balance));
     }
 
@@ -133,13 +122,20 @@ mod tests {
         let account_id = Uuid::new_v4();
         let balance = 1000u64;
 
-        BalanceCachePort::set(&cache, account_id, balance).await;
+        BalanceCachePort::set(&cache, account_id, balance)
+            .await
+            .unwrap();
         assert_eq!(
-            BalanceCachePort::get(&cache, &account_id).await,
+            BalanceCachePort::get(&cache, &account_id).await.unwrap(),
             Some(balance)
         );
 
-        BalanceCachePort::invalidate(&cache, &account_id).await;
-        assert_eq!(BalanceCachePort::get(&cache, &account_id).await, None);
+        BalanceCachePort::invalidate(&cache, &account_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            BalanceCachePort::get(&cache, &account_id).await.unwrap(),
+            None
+        );
     }
 }

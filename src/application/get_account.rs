@@ -36,9 +36,13 @@ impl GetAccountUseCase {
                 resource: "account".to_string(),
             })?;
 
-        self.balance_cache
+        if let Err(e) = self
+            .balance_cache
             .set(account.id(), account.balance().as_u64())
-            .await;
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set balance in cache")
+        };
 
         Ok(account)
     }
@@ -125,7 +129,9 @@ mod tests {
             })
             .await;
 
-        let cached_balance = BalanceCachePort::get(cache_arc.as_ref(), &account_id).await;
+        let cached_balance = BalanceCachePort::get(cache_arc.as_ref(), &account_id)
+            .await
+            .unwrap();
         assert_eq!(cached_balance, Some(2000));
     }
 }
