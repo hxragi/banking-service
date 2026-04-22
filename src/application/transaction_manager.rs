@@ -218,30 +218,17 @@ where
         self
     }
 
-    fn publish_transaction_event(&self, transaction: Transaction) {
+    async fn publish_transaction_event(&self, transaction: &Transaction) {
         if let Some(ref publisher) = self.event_publisher {
-            let publisher = Arc::clone(publisher);
-            let topic = self.event_topic.clone();
-
-            tokio::spawn(async move {
-                let event = TransactionEvent::from_transaction(&transaction);
-                match publisher.publish(&topic, &event).await {
-                    Ok(_) => {
-                        tracing::info!(
-                            transaction_id = %transaction.id(),
-                            operation_type = %transaction.kind().as_str(),
-                            "transaction event published successfully"
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!(
-                            transaction_id = %transaction.id(),
-                            error = %e,
-                            "failed to publish transaction event"
-                        );
-                    }
+            let event = TransactionEvent::from_transaction(transaction);
+            match publisher.publish(&self.event_topic, &event).await {
+                Ok(_) => {
+                    tracing::info!(transaction_id = %transaction.id(), operation_type = %transaction.kind().as_str(), "transaction event published successfully");
                 }
-            });
+                Err(e) => {
+                    tracing::error!(transaction_id = %transaction.id(), error = %e, "failed to publish transaction event")
+                }
+            }
         }
     }
 
@@ -293,8 +280,7 @@ where
                     metrics.increment_operation(op_str, "success");
                 }
 
-                let transaction = output.transaction().clone();
-                self.publish_transaction_event(transaction);
+                self.publish_transaction_event(output.transaction()).await;
 
                 tracing::info!(operation_type = %operation.operation_type(), "transaction completed successfully");
                 Ok(output)
