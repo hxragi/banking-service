@@ -55,6 +55,10 @@ pub struct KafkaConfig {
     pub app_retry_base_delay_ms: u64,
     #[serde(default = "default_kafka_app_retry_max_delay_ms")]
     pub app_retry_max_delay_ms: u64,
+    #[serde(default = "default_kafka_consumer_connect_max_retries")]
+    pub consumer_connect_max_retries: u32,
+    #[serde(default = "default_kafka_consumer_connect_timeout_secs")]
+    pub consumer_connect_timeout_secs: u64,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -195,6 +199,12 @@ fn default_otel_endpoint() -> String {
 }
 fn default_otel_timeout_secs() -> u64 {
     3
+}
+fn default_kafka_consumer_connect_max_retries() -> u32 {
+    10
+}
+fn default_kafka_consumer_connect_timeout_secs() -> u64 {
+    300
 }
 
 impl AppConfig {

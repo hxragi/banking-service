@@ -792,6 +792,8 @@ pub async fn start_consumer_with_retry(
     handler: Arc<dyn ExternalEventHandler>,
     mut shutdown_rx: mpsc::Receiver<ConsumerCommand>,
     check_interval_secs: u64,
+    max_connect_retries: u32,
+    connect_timeout_secs: u64,
     retry_tracker: Arc<RetryTracker>,
     dlq_producer: Arc<DlqProducer>,
 ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
@@ -833,7 +835,21 @@ pub async fn start_consumer_with_retry(
     let dlq_producer_clone = dlq_producer.clone();
 
     let retry_handle = tokio::spawn(async move {
+        let started_at = tokio::time::Instant::now();
+        let mut attempts: u32 = 0;
+
         loop {
+            if connect_timeout_secs > 0
+                && started_at.elapsed() >= Duration::from_secs(connect_timeout_secs)
+            {
+                tracing::error!(
+                    elapsed_secs = started_at.elapsed().as_secs(),
+                    connect_timeout_secs,
+                    "kafka reconnection timed out - service continues in degraded mode, external event processing disabled"
+                );
+                break;
+            }
+
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(check_interval_secs)) => {}
                 cmd = shutdown_rx.recv() => {
@@ -846,13 +862,17 @@ pub async fn start_consumer_with_retry(
                 }
             }
 
+            attempts += 1;
             let kafka_ok = check_kafka_connectivity(&bootstrap_servers, 10)
                 .await
                 .is_ok();
             let redis_ok = retry_tracker_clone.health_check().await.is_ok();
 
             if kafka_ok && redis_ok {
-                tracing::info!("kafka broker and redis are now available, starting consumer");
+                tracing::info!(
+                    attempt = attempts,
+                    "kafka broker and redis are now available, starting consumer"
+                );
 
                 let (_new_shutdown_tx, new_shutdown_rx) = mpsc::channel::<ConsumerCommand>(1);
 
@@ -878,16 +898,14 @@ pub async fn start_consumer_with_retry(
             } else {
                 if !kafka_ok {
                     tracing::debug!(
-                        "kafka broker still unavailable, will retry in {} seconds",
-                        check_interval_secs
+                        attempt = attempts,
+                        max_connect_retries,
+                        "kafka broker still unavailable",
                     );
                 }
 
                 if !redis_ok {
-                    tracing::debug!(
-                        "redis still unavailable, will retry in {} seconds",
-                        check_interval_secs
-                    );
+                    tracing::debug!(attempt = attempts, "redis still unavailable");
                 }
             }
         }

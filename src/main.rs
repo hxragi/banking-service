@@ -296,6 +296,8 @@ async fn main() -> anyhow::Result<()> {
         event_handler,
         consumer_shutdown_rx,
         kafka_check_interval_secs,
+        config.kafka.consumer_connect_max_retries,
+        config.kafka.consumer_connect_timeout_secs,
         retry_tracker,
         dlq_producer,
     )
