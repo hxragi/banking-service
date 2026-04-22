@@ -23,6 +23,41 @@ pub type TransactionManager = FinancialTransactionManager<
     DbTransaction,
 >;
 
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay_ms: 10,
+            max_delay_ms: 500,
+        }
+    }
+}
+
+impl RetryConfig {
+    pub fn new(max_attempts: u32, base_delay_ms: u64, max_delay_ms: u64) -> Self {
+        Self {
+            max_attempts,
+            base_delay_ms,
+            max_delay_ms,
+        }
+    }
+
+    pub fn from_app_config(max_retries: u32, base_delay_ms: u64, max_delay_ms: u64) -> Self {
+        Self {
+            max_attempts: max_retries,
+            base_delay_ms,
+            max_delay_ms,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DepositInput {
     pub account_number: AccountNumber,
@@ -158,6 +193,7 @@ pub struct FinancialTransactionManager<M, Tx> {
     event_publisher: Option<Arc<dyn EventPublisher + Send + Sync>>,
     event_topic: String,
     metrics: Option<Arc<dyn MetricsPort + Send + Sync>>,
+    retry_config: RetryConfig,
     _phantom: std::marker::PhantomData<Tx>,
 }
 
@@ -184,8 +220,14 @@ where
             event_publisher,
             event_topic: "bank.transaction.created".to_string(),
             metrics,
+            retry_config: RetryConfig::default(),
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    pub fn with_retry_config(mut self, retry_config: RetryConfig) -> Self {
+        self.retry_config = retry_config;
+        self
     }
 
     fn publish_transaction_event(&self, transaction: Transaction) {
@@ -238,6 +280,7 @@ where
         let operation_clone = operation.clone();
         let db_manager = self.db_manager.clone();
         let idem_key_clone = idempotency_key.clone();
+        let retry_config = self.retry_config;
 
         let result = execute_with_retry(
             operation_clone,
@@ -247,6 +290,7 @@ where
             idem_tx_repo,
             db_manager,
             idem_key_clone,
+            retry_config,
         )
         .await;
 
@@ -292,15 +336,14 @@ async fn execute_with_retry<M, Tx>(
     idempotency_repository: Arc<dyn IdempotencyTxRepository<Tx> + Send + Sync>,
     db_manager: M,
     idempotency_key: Option<String>,
+    retry_config: RetryConfig,
 ) -> Result<TransactionOutput, TransactionError>
 where
     M: TransactionPort<Transaction = Tx>,
     Tx: TxTrait + Send,
 {
-    let max_attempts = 3u32;
     let mut attempt = 1u32;
-    let mut delay_ms = 10u64;
-    const MAX_DELAY_MS: u64 = 500;
+    let mut delay_ms = retry_config.base_delay_ms;
 
     loop {
         let mut db_tx = db_manager.begin().await.map_err(|e| {
@@ -393,16 +436,16 @@ where
                         )
                 );
 
-                if is_transient && attempt < max_attempts {
+                if is_transient && attempt < retry_config.max_attempts {
                     tracing::warn!(
                         error = %e,
                         attempt = attempt,
-                        max_attempts = max_attempts,
+                        max_attempts = retry_config.max_attempts,
                         delay_ms = delay_ms,
                         "transient error detected, retrying transaction"
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    delay_ms = (delay_ms * 2).min(MAX_DELAY_MS);
+                    delay_ms = (delay_ms * 2).min(retry_config.max_delay_ms);
                     delay_ms += rand::random::<u64>() % 10;
                     attempt += 1;
                     continue;
@@ -655,8 +698,8 @@ mod tests {
     };
     use crate::application::transaction_manager::TransactionError;
     use crate::application::transaction_manager::{
-        DepositInput, TransactionOperation, TransactionOutput, TransferInput, TransferResult,
-        WithdrawInput,
+        DepositInput, RetryConfig, TransactionOperation, TransactionOutput, TransferInput,
+        TransferResult, WithdrawInput,
     };
     use crate::domain::{
         account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
@@ -673,6 +716,30 @@ mod tests {
             Balance::new(balance),
             OffsetDateTime::UNIX_EPOCH,
         )
+    }
+
+    #[test]
+    fn retry_config_default_values() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_attempts, 3);
+        assert_eq!(config.base_delay_ms, 10);
+        assert_eq!(config.max_delay_ms, 500);
+    }
+
+    #[test]
+    fn retry_config_custom_values() {
+        let config = RetryConfig::new(5, 50, 1000);
+        assert_eq!(config.max_attempts, 5);
+        assert_eq!(config.base_delay_ms, 50);
+        assert_eq!(config.max_delay_ms, 1000);
+    }
+
+    #[test]
+    fn retry_config_from_app_config() {
+        let config = RetryConfig::from_app_config(7, 100, 5000);
+        assert_eq!(config.max_attempts, 7);
+        assert_eq!(config.base_delay_ms, 100);
+        assert_eq!(config.max_delay_ms, 5000);
     }
 
     #[test]
@@ -718,9 +785,9 @@ mod tests {
 
     #[test]
     fn retry_logic_increments_delay_between_attempts() {
-        let initial_delay = 10u64;
+        let base_delay = 10u64;
         let max_delay = 500u64;
-        let mut delay = initial_delay;
+        let mut delay = base_delay;
 
         for attempt in 1..=3 {
             delay = (delay * 2).min(max_delay);
@@ -738,6 +805,35 @@ mod tests {
                 "delay progression should approximately double each attempt"
             );
         }
+    }
+
+    #[test]
+    fn retry_logic_respects_custom_base_delay() {
+        let base_delay = 50u64;
+        let max_delay = 1000u64;
+        let mut delay = base_delay;
+
+        delay = (delay * 2).min(max_delay);
+        assert_eq!(delay, 100);
+
+        delay = (delay * 2).min(max_delay);
+        assert_eq!(delay, 200);
+
+        delay = (delay * 2).min(max_delay);
+        assert_eq!(delay, 400);
+    }
+
+    #[test]
+    fn retry_logic_clamps_to_max_delay() {
+        let base_delay = 500u64;
+        let max_delay = 600u64;
+        let mut delay = base_delay;
+
+        delay = (delay * 2).min(max_delay);
+        assert_eq!(delay, 600);
+
+        delay = (delay * 2).min(max_delay);
+        assert_eq!(delay, 600);
     }
 
     #[test]
@@ -1066,7 +1162,7 @@ mod tests {
         async fn save_in_tx(
             &self,
             _key: &str,
-            response: &str,
+            _response: &str,
             _tx: &mut (),
         ) -> Result<(), IdempotencyError> {
             Err(IdempotencyError::KeyAlreadyExists {
@@ -1092,6 +1188,25 @@ mod tests {
         )
     }
 
+    fn setup_manager_with_retry_config(
+        account_tx_repo: Arc<InMemoryAccountTxRepository>,
+        retry_config: RetryConfig,
+    ) -> FinancialTransactionManager<FakeTransactionPort, ()> {
+        let account_repo = crate::test_utils::mocks::MockAccountRepository::new();
+        let tx_write_repo = Arc::new(InMemoryTransactionWriteRepository::new());
+        let idem_repo = Arc::new(FakeIdempotencyTxRepository);
+        FinancialTransactionManager::new(
+            FakeTransactionPort,
+            Arc::new(account_repo),
+            account_tx_repo,
+            tx_write_repo,
+            idem_repo,
+            None,
+            None,
+        )
+        .with_retry_config(retry_config)
+    }
+
     #[tokio::test]
     async fn test_deposit_updates_balance() {
         let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
@@ -1099,6 +1214,34 @@ mod tests {
         account_tx_repo.insert_account(account.clone()).await;
 
         let manager = setup_manager(account_tx_repo.clone());
+        let result = manager
+            .execute(
+                TransactionOperation::Deposit(DepositInput {
+                    account_number: AccountNumber::new("ACC001").unwrap(),
+                    amount: Amount::new(200).unwrap(),
+                }),
+                None,
+            )
+            .await
+            .unwrap();
+
+        match result {
+            TransactionOutput::Deposit(acc, _tx) => {
+                assert_eq!(acc.balance().as_u64(), 700);
+            }
+            _ => panic!("expected deposit output"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_deposit_with_custom_retry_config() {
+        let account_tx_repo = Arc::new(InMemoryAccountTxRepository::new());
+        let account = create_test_account("ACC001", 500);
+        account_tx_repo.insert_account(account.clone()).await;
+
+        let retry_config = RetryConfig::new(5, 100, 2000);
+        let manager = setup_manager_with_retry_config(account_tx_repo.clone(), retry_config);
+
         let result = manager
             .execute(
                 TransactionOperation::Deposit(DepositInput {

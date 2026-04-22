@@ -58,6 +58,26 @@ pub struct KafkaConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct TransactionRetryConfig {
+    #[serde(default = "default_tx_retry_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default = "default_tx_retry_base_delay_ms")]
+    pub base_delay_ms: u64,
+    #[serde(default = "default_tx_retry_max_delay_ms")]
+    pub max_delay_ms: u64,
+}
+
+impl Default for TransactionRetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_tx_retry_max_attempts(),
+            base_delay_ms: default_tx_retry_base_delay_ms(),
+            max_delay_ms: default_tx_retry_max_delay_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct SentryConfig {
     #[serde(default = "default_sentry_dsn")]
     pub dsn: String,
@@ -95,6 +115,8 @@ pub struct AppConfig {
     pub dragonfly: DragonflyConfig,
     pub server: ServerConfig,
     pub kafka: KafkaConfig,
+    #[serde(default)]
+    pub transaction_retry: TransactionRetryConfig,
     pub sentry: Option<SentryConfig>,
     #[serde(default)]
     pub telemetry: TelemetryConfig,
@@ -154,6 +176,15 @@ fn default_kafka_app_retry_max_delay_ms() -> u64 {
 }
 fn default_sentry_environment() -> String {
     "production".to_string()
+}
+fn default_tx_retry_max_attempts() -> u32 {
+    3
+}
+fn default_tx_retry_base_delay_ms() -> u64 {
+    10
+}
+fn default_tx_retry_max_delay_ms() -> u64 {
+    500
 }
 fn default_sentry_sample_rate() -> f32 {
     1.0

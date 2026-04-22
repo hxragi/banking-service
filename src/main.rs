@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::application::transaction_manager::RetryConfig;
 use crate::application::{
     change_tier::ChangeTierUseCase, create_account::CreateAccountUseCase, deposit::DepositUseCase,
     get_account::GetAccountUseCase, get_accounts::GetAccountsUseCase,
@@ -111,15 +112,24 @@ async fn main() -> anyhow::Result<()> {
     );
     tracing::info!("Kafka event publisher initialized");
 
-    let transaction_manager: Arc<TransactionManager> = Arc::new(TransactionManager::new(
-        db_tx_manager.clone(),
-        account_repo.clone(),
-        Arc::new(SqlxAccountTxRepository),
-        Arc::new(SqlxTransactionWriteRepository),
-        idempotency_repo.clone(),
-        Some(event_publisher as Arc<dyn EventPublisher>),
-        Some(metrics.clone() as Arc<dyn MetricsPort>),
-    ));
+    let retry_config = RetryConfig::from_app_config(
+        config.transaction_retry.max_attempts,
+        config.transaction_retry.base_delay_ms,
+        config.transaction_retry.max_delay_ms,
+    );
+
+    let transaction_manager: Arc<TransactionManager> = Arc::new(
+        TransactionManager::new(
+            db_tx_manager.clone(),
+            account_repo.clone(),
+            Arc::new(SqlxAccountTxRepository),
+            Arc::new(SqlxTransactionWriteRepository),
+            idempotency_repo.clone(),
+            Some(event_publisher as Arc<dyn EventPublisher>),
+            Some(metrics.clone() as Arc<dyn MetricsPort>),
+        )
+        .with_retry_config(retry_config),
+    );
 
     let balance_cache_ttl = Duration::from_secs(config.cache.balance_cache_ttl_secs);
     let balance_cache = BalanceCache::new(
