@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     application::{
-        ports::{BalanceCachePort, OperationError},
+        ports::{BalanceCachePort, OperationError, Transaction as TxTrait, TransactionPort},
         transaction_manager::{
-            DepositInput as TxDepositInput, TransactionManager, TransactionOperation,
+            DepositInput as TxDepositInput, FinancialTransactionManager, TransactionOperation,
         },
     },
     domain::{account::Account, account_number::AccountNumber, amount::Amount},
@@ -17,22 +17,22 @@ pub struct DepositInput {
     pub idempotency_key: Option<String>,
 }
 
-pub struct DepositUseCase {
-    transaction_manager: Arc<TransactionManager>,
+#[async_trait::async_trait]
+pub trait DepositPort: Send + Sync {
+    async fn execute(&self, input: DepositInput) -> Result<Account, OperationError>;
+}
+
+pub struct DepositUseCase<M, Tx> {
+    transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
     balance_cache: Arc<dyn BalanceCachePort>,
 }
 
-impl DepositUseCase {
-    pub fn new(
-        transaction_manager: Arc<TransactionManager>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
-        Self {
-            transaction_manager,
-            balance_cache,
-        }
-    }
-
+#[async_trait::async_trait]
+impl<M, Tx> DepositPort for DepositUseCase<M, Tx>
+where
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
+{
     #[tracing::instrument(
         skip(self),
         fields(
@@ -41,7 +41,7 @@ impl DepositUseCase {
             idempotency_key = ?input.idempotency_key
         )
     )]
-    pub async fn execute(&self, input: DepositInput) -> Result<Account, OperationError> {
+    async fn execute(&self, input: DepositInput) -> Result<Account, OperationError> {
         let account_number_str = input.account_number.to_string();
         let DepositInput {
             account_number,
@@ -78,6 +78,22 @@ impl DepositUseCase {
                 tracing::warn!(account_number = %account_number_str, error = %e, "deposit failed");
                 Err(OperationError::from(e))
             }
+        }
+    }
+}
+
+impl<M, Tx> DepositUseCase<M, Tx>
+where
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
+{
+    pub fn new(
+        transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
+        balance_cache: Arc<dyn BalanceCachePort>,
+    ) -> Self {
+        Self {
+            transaction_manager,
+            balance_cache,
         }
     }
 }

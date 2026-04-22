@@ -8,12 +8,12 @@ use axum::{
 
 use crate::application::{
     create_account::{CreateAccountInput, CreateAccountUseCase},
-    deposit::{DepositInput, DepositUseCase},
+    deposit::{DepositInput, DepositPort, DepositUseCase},
     get_account::{GetAccountInput, GetAccountUseCase},
     get_accounts::{GetAccountsInput, GetAccountsUseCase},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
-    transfer::{TransferInput, TransferUseCase},
-    withdraw::{WithdrawInput, WithdrawUseCase},
+    transfer::{TransferInput, TransferPort, TransferUseCase},
+    withdraw::{WithdrawInput, WithdrawPort, WithdrawUseCase},
 };
 use crate::domain::account_number::AccountNumber;
 use crate::domain::amount::Amount;
@@ -39,9 +39,9 @@ pub struct AccountHttpHandler {
     create_account_use_case: Arc<CreateAccountUseCase>,
     get_account_use_case: Arc<GetAccountUseCase>,
     get_accounts_use_case: Arc<GetAccountsUseCase>,
-    deposit_use_case: Arc<DepositUseCase>,
-    withdraw_use_case: Arc<WithdrawUseCase>,
-    transfer_use_case: Arc<TransferUseCase>,
+    deposit_use_case: Arc<dyn DepositPort>,
+    withdraw_use_case: Arc<dyn WithdrawPort>,
+    transfer_use_case: Arc<dyn TransferPort>,
     get_transactions_use_case: Arc<GetTransactionsUseCase>,
     idempotency_service: Arc<IdempotencyService>,
 }
@@ -52,9 +52,9 @@ impl AccountHttpHandler {
         create_account_use_case: Arc<CreateAccountUseCase>,
         get_account_use_case: Arc<GetAccountUseCase>,
         get_accounts_use_case: Arc<GetAccountsUseCase>,
-        deposit_use_case: Arc<DepositUseCase>,
-        withdraw_use_case: Arc<WithdrawUseCase>,
-        transfer_use_case: Arc<TransferUseCase>,
+        deposit_use_case: Arc<dyn DepositPort>,
+        withdraw_use_case: Arc<dyn WithdrawPort>,
+        transfer_use_case: Arc<dyn TransferPort>,
         get_transactions_use_case: Arc<GetTransactionsUseCase>,
         idempotency_service: Arc<IdempotencyService>,
     ) -> Self {

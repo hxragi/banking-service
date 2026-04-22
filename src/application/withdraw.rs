@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     application::{
-        ports::{BalanceCachePort, OperationError},
+        ports::{BalanceCachePort, OperationError, Transaction as TxTrait, TransactionPort},
         transaction_manager::{
-            TransactionManager, TransactionOperation, WithdrawInput as TxWithdrawInput,
+            FinancialTransactionManager, TransactionOperation, WithdrawInput as TxWithdrawInput,
         },
     },
     domain::{account::Account, account_number::AccountNumber, amount::Amount},
@@ -17,22 +17,22 @@ pub struct WithdrawInput {
     pub idempotency_key: Option<String>,
 }
 
-pub struct WithdrawUseCase {
-    transaction_manager: Arc<TransactionManager>,
+pub struct WithdrawUseCase<M, Tx> {
+    transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
     balance_cache: Arc<dyn BalanceCachePort>,
 }
 
-impl WithdrawUseCase {
-    pub fn new(
-        transaction_manager: Arc<TransactionManager>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
-        Self {
-            transaction_manager,
-            balance_cache,
-        }
-    }
+#[async_trait::async_trait]
+pub trait WithdrawPort: Send + Sync {
+    async fn execute(&self, input: WithdrawInput) -> Result<Account, OperationError>;
+}
 
+#[async_trait::async_trait]
+impl<M, Tx> WithdrawPort for WithdrawUseCase<M, Tx>
+where
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
+{
     #[tracing::instrument(
         skip(self),
         fields(
@@ -41,7 +41,7 @@ impl WithdrawUseCase {
             idempotency_key = ?input.idempotency_key
         )
     )]
-    pub async fn execute(&self, input: WithdrawInput) -> Result<Account, OperationError> {
+    async fn execute(&self, input: WithdrawInput) -> Result<Account, OperationError> {
         let account_number_str = input.account_number.to_string();
         let WithdrawInput {
             account_number,
@@ -78,6 +78,22 @@ impl WithdrawUseCase {
                 tracing::warn!(account_number = %account_number_str, error = %e, "withdraw failed");
                 Err(OperationError::from(e))
             }
+        }
+    }
+}
+
+impl<M, Tx> WithdrawUseCase<M, Tx>
+where
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
+{
+    pub fn new(
+        transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
+        balance_cache: Arc<dyn BalanceCachePort>,
+    ) -> Self {
+        Self {
+            transaction_manager,
+            balance_cache,
         }
     }
 }

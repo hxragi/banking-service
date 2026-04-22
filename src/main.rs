@@ -12,11 +12,13 @@ use crate::application::{
     change_tier::ChangeTierUseCase, create_account::CreateAccountUseCase, deposit::DepositUseCase,
     get_account::GetAccountUseCase, get_accounts::GetAccountsUseCase,
     get_transactions::GetTransactionsUseCase, ports::BalanceCachePort, ports::EventPublisher,
-    ports::MetricsPort, transaction_manager::TransactionManager, transfer::TransferUseCase,
-    withdraw::WithdrawUseCase,
+    ports::MetricsPort, transaction_manager::FinancialTransactionManager,
+    transfer::TransferUseCase, withdraw::WithdrawUseCase,
 };
 use crate::infrastructure::{
-    config::config::AppConfig, database::pool::create_with_config, database::transaction::Manager,
+    config::config::AppConfig,
+    database::pool::create_with_config,
+    database::transaction::{DbTransaction, Manager},
     generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
 };
 use crate::infrastructure::{
@@ -50,6 +52,8 @@ mod domain;
 mod infrastructure;
 mod presentation;
 mod test_utils;
+
+type TransactionManager = FinancialTransactionManager<Manager, DbTransaction>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

@@ -16,13 +16,6 @@ use crate::{
     },
 };
 
-pub type DbTransaction = crate::infrastructure::database::transaction::DbTransaction;
-
-pub type TransactionManager = FinancialTransactionManager<
-    crate::infrastructure::database::transaction::Manager,
-    DbTransaction,
->;
-
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
     pub max_attempts: u32,

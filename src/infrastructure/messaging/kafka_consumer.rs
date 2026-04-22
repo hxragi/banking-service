@@ -17,9 +17,9 @@ use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::application::{
-    deposit::{DepositInput, DepositUseCase},
+    deposit::{DepositInput, DepositPort, DepositUseCase},
     ports::{AccountRepository, OperationError},
-    withdraw::{WithdrawInput, WithdrawUseCase},
+    withdraw::{WithdrawInput, WithdrawPort, WithdrawUseCase},
 };
 use crate::domain::{account_number::AccountNumber, amount::Amount};
 use crate::infrastructure::messaging::kafka_tracing::extract_trace_context;
@@ -256,15 +256,15 @@ pub enum ExternalEventError {
 }
 
 pub struct ExternalEventHandlerImpl {
-    deposit_use_case: Arc<DepositUseCase>,
-    withdraw_use_case: Arc<WithdrawUseCase>,
+    deposit_use_case: Arc<dyn DepositPort>,
+    withdraw_use_case: Arc<dyn WithdrawPort>,
     account_repo: Arc<dyn AccountRepository + Send + Sync>,
 }
 
 impl ExternalEventHandlerImpl {
     pub fn new(
-        deposit_use_case: Arc<DepositUseCase>,
-        withdraw_use_case: Arc<WithdrawUseCase>,
+        deposit_use_case: Arc<dyn DepositPort>,
+        withdraw_use_case: Arc<dyn WithdrawPort>,
         account_repo: Arc<dyn AccountRepository + Send + Sync>,
     ) -> Self {
         Self {
