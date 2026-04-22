@@ -134,6 +134,8 @@ pub enum TransactionError {
     ToAccountNotFound,
     #[error("account unavailable")]
     AccountUnavailable,
+    #[error("database transaction failed: {0}")]
+    DbTransactionFailed(String),
     #[error("insufficient funds")]
     InsufficientFunds,
     #[error("same account transfer")]
@@ -161,6 +163,7 @@ impl From<TransactionError> for OperationError {
             TransactionError::AccountUnavailable => OperationError::Unavailable {
                 reason: "account temporarily unavailable".to_string(),
             },
+            TransactionError::DbTransactionFailed(reason) => OperationError::Unavailable { reason },
             TransactionError::InsufficientFunds => OperationError::InsufficientFunds,
             TransactionError::SameAccountTransfer => OperationError::InvalidInput {
                 field: "account".to_string(),
@@ -340,7 +343,7 @@ where
     loop {
         let mut db_tx = db_manager.begin().await.map_err(|e| {
             tracing::error!(error = %e, "failed to begin transaction");
-            TransactionError::AccountUnavailable
+            TransactionError::DbTransactionFailed(e.to_string())
         })?;
 
         let result = match &operation {
@@ -420,7 +423,7 @@ where
 
                 let is_transient = matches!(
                     &e,
-                    TransactionError::AccountUnavailable
+                    TransactionError::DbTransactionFailed(_)
                         | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
                         | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
                         | TransactionError::AccountRepository(
@@ -459,7 +462,7 @@ async fn parse_cached_response(
             let account = account_repository
                 .find_by_number(&input.account_number)
                 .await?
-                .ok_or(TransactionError::AccountUnavailable)?;
+                .ok_or(TransactionError::AccountNotFound)?;
 
             let transaction = Transaction::deposit(
                 uuid::Uuid::new_v4(),
@@ -474,7 +477,7 @@ async fn parse_cached_response(
             let account = account_repository
                 .find_by_number(&input.account_number)
                 .await?
-                .ok_or(TransactionError::AccountUnavailable)?;
+                .ok_or(TransactionError::AccountNotFound)?;
 
             let transaction = Transaction::withdraw(
                 uuid::Uuid::new_v4(),
@@ -489,11 +492,11 @@ async fn parse_cached_response(
             let from_account = account_repository
                 .find_by_number(&input.from_account_number)
                 .await?
-                .ok_or(TransactionError::AccountUnavailable)?;
+                .ok_or(TransactionError::FromAccountNotFound)?;
             let to_account = account_repository
                 .find_by_number(&input.to_account_number)
                 .await?
-                .ok_or(TransactionError::AccountUnavailable)?;
+                .ok_or(TransactionError::ToAccountNotFound)?;
 
             let transaction = Transaction::transfer(
                 uuid::Uuid::new_v4(),
@@ -728,7 +731,7 @@ mod tests {
 
     #[test]
     fn retry_config_from_app_config() {
-        let config = RetryConfig::from_app_config(7, 100, 5000);
+        let config = RetryConfig::new(7, 100, 5000);
         assert_eq!(config.max_attempts, 7);
         assert_eq!(config.base_delay_ms, 100);
         assert_eq!(config.max_delay_ms, 5000);
@@ -737,7 +740,7 @@ mod tests {
     #[test]
     fn classifies_transient_error_correctly() {
         let transient_errors = vec![
-            TransactionError::AccountUnavailable,
+            TransactionError::DbTransactionFailed("commit failed".to_string()),
             TransactionError::AccountRepository(AccountRepositoryError::LockTimeout),
             TransactionError::AccountRepository(AccountRepositoryError::Deadlock),
             TransactionError::AccountRepository(AccountRepositoryError::SerializationFailure),
@@ -746,7 +749,7 @@ mod tests {
         for err in transient_errors {
             let is_transient = matches!(
                 &err,
-                TransactionError::AccountUnavailable
+                TransactionError::DbTransactionFailed(_)
                     | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
                     | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
                     | TransactionError::AccountRepository(
@@ -761,6 +764,7 @@ mod tests {
     fn classifies_non_transient_error_correctly() {
         let non_transient_errors = vec![
             TransactionError::AccountNotFound,
+            TransactionError::AccountUnavailable,
             TransactionError::InsufficientFunds,
             TransactionError::SameAccountTransfer,
         ];
@@ -768,7 +772,7 @@ mod tests {
         for err in non_transient_errors {
             let is_transient = matches!(
                 &err,
-                TransactionError::AccountUnavailable
+                TransactionError::DbTransactionFailed(_)
                     | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
             );
             assert!(!is_transient, "expected {:?} to be non-transient", err);
@@ -947,6 +951,15 @@ mod tests {
         let tx_err = TransactionError::AccountRepository(AccountRepositoryError::LockTimeout);
         let op_err: OperationError = tx_err.into();
         assert!(matches!(op_err, OperationError::LockTimeout));
+    }
+
+    #[test]
+    fn converts_db_transaction_failed_to_operation_error() {
+        let tx_err = TransactionError::DbTransactionFailed("commit failed".to_string());
+        let op_err: OperationError = tx_err.into();
+        assert!(
+            matches!(op_err, OperationError::Unavailable { reason } if reason == "commit failed")
+        )
     }
 
     #[test]

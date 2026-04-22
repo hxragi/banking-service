@@ -1164,7 +1164,7 @@ mod tests {
     #[test]
     fn retry_tracker_error_display() {
         let err = RetryTrackerError::RedisUnavailable("timeout".to_string());
-        assert!(err.to_string().contains("Redis unavailable"));
+        assert!(err.to_string().contains("redis unavailable"));
         assert!(err.to_string().contains("timeout"));
     }
 }

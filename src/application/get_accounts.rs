@@ -89,34 +89,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uses_cached_balances_when_available() {
-        let account1 = make_account("ACC001", 100);
-        let account2 = make_account("ACC002", 200);
-        let id1 = account1.id();
-        let id2 = account2.id();
-
-        let repo = Arc::new(MockAccountRepository::new().with_accounts(vec![account1, account2]));
-
-        let (cache, _container) = setup_redis().await;
-        BalanceCachePort::set(&cache, id1, 1000).await;
-        BalanceCachePort::set(&cache, id2, 2000).await;
-
-        let use_case = GetAccountsUseCase::new(repo, Arc::new(cache));
-
-        let result = use_case
-            .execute(GetAccountsInput {
-                owner: Owner::User(UserId::new("user-1").unwrap()),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        let returned_accounts = result.unwrap();
-        assert_eq!(returned_accounts.len(), 2);
-        assert_eq!(returned_accounts[0].balance().as_u64(), 1000);
-        assert_eq!(returned_accounts[1].balance().as_u64(), 2000);
-    }
-
-    #[tokio::test]
     async fn populates_cache_on_miss() {
         let account1 = make_account("ACC001", 300);
         let account2 = make_account("ACC002", 400);

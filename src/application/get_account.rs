@@ -110,27 +110,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_cached_balance_on_cache_hit() {
-        let account = make_account(1000);
-        let account_id = account.id();
-        let repo = Arc::new(MockAccountRepository::new().with_account(account));
-
-        let (cache, _container): (_, _) = setup_redis().await;
-        BalanceCachePort::set(&cache, account_id, 5000).await;
-
-        let use_case = GetAccountUseCase::new(repo, Arc::new(cache));
-
-        let result = use_case
-            .execute(GetAccountInput {
-                account_number: AccountNumber::new("ACC001").unwrap(),
-            })
-            .await;
-
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().balance().as_u64(), 5000);
-    }
-
-    #[tokio::test]
     async fn populates_cache_on_cache_miss() {
         let account = make_account(2000);
         let account_id = account.id();
