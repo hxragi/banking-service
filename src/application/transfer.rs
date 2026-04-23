@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::{
     application::{
-        ports::{BalanceCachePort, OperationError, Transaction as TxTrait, TransactionPort},
+        ports::{BalanceCachePort, OperationError},
         transaction_manager::{
-            FinancialTransactionManager, TransactionOperation, TransferInput as TxTransferInput,
+            TransactionManagerPort, TransactionOperation, TransferInput as TxTransferInput,
         },
     },
     domain::{account_number::AccountNumber, amount::Amount, transaction::Transaction},
@@ -27,17 +27,25 @@ pub trait TransferPort: Send + Sync {
     async fn execute(&self, input: TransferInput) -> Result<TransferOutput, OperationError>;
 }
 
-pub struct TransferUseCase<M, Tx> {
-    transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
+pub struct TransferUseCase {
+    transaction_manager: Arc<dyn TransactionManagerPort>,
     balance_cache: Arc<dyn BalanceCachePort>,
 }
 
+impl TransferUseCase {
+    pub fn new(
+        transaction_manager: Arc<dyn TransactionManagerPort>,
+        balance_cache: Arc<dyn BalanceCachePort>,
+    ) -> Self {
+        Self {
+            transaction_manager,
+            balance_cache,
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl<M, Tx> TransferPort for TransferUseCase<M, Tx>
-where
-    M: TransactionPort<Transaction = Tx>,
-    Tx: TxTrait + Send,
-{
+impl TransferPort for TransferUseCase {
     #[tracing::instrument(
         skip(self),
         fields(
@@ -109,22 +117,6 @@ where
                 tracing::warn!(error = %e, "transfer failed");
                 Err(OperationError::from(e))
             }
-        }
-    }
-}
-
-impl<M, Tx> TransferUseCase<M, Tx>
-where
-    M: TransactionPort<Transaction = Tx>,
-    Tx: TxTrait + Send,
-{
-    pub fn new(
-        transaction_manager: Arc<FinancialTransactionManager<M, Tx>>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
-        Self {
-            transaction_manager,
-            balance_cache,
         }
     }
 }

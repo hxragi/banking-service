@@ -171,6 +171,15 @@ impl From<TransactionError> for OperationError {
     }
 }
 
+#[async_trait::async_trait]
+pub trait TransactionManagerPort: Send + Sync {
+    async fn execute(
+        &self,
+        operation: TransactionOperation,
+        idempotency_key: Option<String>,
+    ) -> Result<TransactionOutput, TransactionError>;
+}
+
 #[derive(Clone)]
 pub struct FinancialTransactionManager<M, Tx> {
     db_manager: M,
@@ -299,6 +308,21 @@ where
                 Err(e)
             }
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl<M, Tx> TransactionManagerPort for FinancialTransactionManager<M, Tx>
+where
+    M: TransactionPort<Transaction = Tx>,
+    Tx: TxTrait + Send,
+{
+    async fn execute(
+        &self,
+        operation: TransactionOperation,
+        idempotency_key: Option<String>,
+    ) -> Result<TransactionOutput, TransactionError> {
+        FinancialTransactionManager::execute(self, operation, idempotency_key).await
     }
 }
 
