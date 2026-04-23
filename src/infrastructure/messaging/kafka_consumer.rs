@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,19 +8,20 @@ use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
     consumer::{CommitMode, Consumer, StreamConsumer},
-    message::{BorrowedMessage, Headers},
+    message::BorrowedMessage,
     producer::{FutureProducer, Producer},
 };
 use redis::aio::MultiplexedConnection;
 use thiserror::Error;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::application::{
-    deposit::{DepositInput, DepositPort, DepositUseCase},
+    deposit::{DepositInput, DepositPort},
     ports::{AccountRepository, OperationError},
-    withdraw::{WithdrawInput, WithdrawPort, WithdrawUseCase},
+    withdraw::{WithdrawInput, WithdrawPort},
 };
 use crate::domain::{account_number::AccountNumber, amount::Amount};
 use crate::infrastructure::messaging::kafka_tracing::extract_trace_context;
@@ -47,13 +49,17 @@ impl RetryTrackerError {
 #[derive(Clone)]
 pub struct RetryTracker {
     redis: MultiplexedConnection,
+    memory: Arc<TokioMutex<HashMap<String, u32>>>,
 }
 
 impl RetryTracker {
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
         let redis = client.get_multiplexed_tokio_connection().await?;
-        Ok(Self { redis })
+        Ok(Self {
+            redis,
+            memory: Arc::new(TokioMutex::new(HashMap::new())),
+        })
     }
 
     pub async fn health_check(&self) -> Result<(), RetryTrackerError> {
@@ -78,13 +84,19 @@ impl RetryTracker {
         let key = self.retry_key(topic, partition, offset);
         let mut conn = self.redis.clone();
 
-        redis::AsyncCommands::get::<_, Option<u32>>(&mut conn, key)
-            .await
-            .map(|opt| opt.unwrap_or(0))
-            .map_err(|e| {
-                tracing::error!(error = %e, topic, partition, offset, "redis unavailable while getting retry count");
-                RetryTrackerError::RedisUnavailable(e.to_string())
-            })
+        match redis::AsyncCommands::get::<_, Option<u32>>(&mut conn, &key).await {
+            Ok(opt) => Ok(opt.unwrap_or(0)),
+            Err(e) => {
+                let err = RetryTrackerError::RedisUnavailable(e.to_string());
+                if err.is_connection_error() {
+                    let memory = self.memory.lock().await;
+                    Ok(*memory.get(&key).unwrap_or(&0))
+                } else {
+                    tracing::error!(error = %e, topic, partition, offset, "redis error while getting retry count");
+                    Err(err)
+                }
+            }
+        }
     }
 
     pub async fn increment_retry(
@@ -97,25 +109,36 @@ impl RetryTracker {
         let mut conn = self.redis.clone();
 
         async move {
-            let new_count: u32 = redis::cmd("INCR")
+            match redis::cmd("INCR")
                 .arg(&key)
-                .query_async(&mut conn)
+                .query_async::<u32>(&mut conn)
                 .await
-                .map_err(|e| RetryTrackerError::RedisUnavailable(e.to_string()))?;
-
-            if new_count == 1 {
-                redis::cmd("EXPIRE")
-                    .arg(&key)
-                    .arg(RETRY_KEY_TTL_SECS)
-                    .query_async::<()>(&mut conn)
-                    .await
-                    .map_err(|e| {
-                        tracing::warn!(error = %e, key = %key, "failed to set ttl on retry key - key may accumulate");
-                    })
-                    .ok();
+            {
+                Ok(new_count) => {
+                    if new_count == 1 {
+                        redis::cmd("EXPIRE")
+                            .arg(&key)
+                            .arg(RETRY_KEY_TTL_SECS)
+                            .query_async::<()>(&mut conn)
+                            .await
+                            .map_err(|e| {
+                                tracing::warn!(error = %e, key = %key, "failed to set ttl on retry key - key may accumulate");
+                            })
+                            .ok();
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    let err = RetryTrackerError::RedisUnavailable(e.to_string());
+                    if err.is_connection_error() {
+                        let mut memory = self.memory.lock().await;
+                        *memory.entry(key).or_insert(0) += 1;
+                        Ok(())
+                    } else {
+                        Err(err)
+                    }
+                }
             }
-
-            Ok(())
         }
         .await
     }
@@ -128,12 +151,24 @@ impl RetryTracker {
     ) -> Result<(), RetryTrackerError> {
         let key = self.retry_key(topic, partition, offset);
         let mut conn = self.redis.clone();
-        redis::AsyncCommands::del(&mut conn, key)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, topic, offset, "redis unavailable while clearing retry count");
-                RetryTrackerError::RedisUnavailable(e.to_string())
-            })
+        match redis::AsyncCommands::del(&mut conn, &key).await {
+            Ok(()) => {
+                let mut memory = self.memory.lock().await;
+                memory.remove(&key);
+                Ok(())
+            }
+            Err(e) => {
+                let err = RetryTrackerError::RedisUnavailable(e.to_string());
+                if err.is_connection_error() {
+                    let mut memory = self.memory.lock().await;
+                    memory.remove(&key);
+                    Ok(())
+                } else {
+                    tracing::error!(error = %e, topic, offset, "redis error while clearing retry count");
+                    Err(err)
+                }
+            }
+        }
     }
 }
 
@@ -238,19 +273,14 @@ pub trait ExternalEventHandler: Send + Sync {
 pub enum ExternalEventError {
     #[error("account not found for user {user_id}")]
     AccountNotFound { user_id: String },
-
     #[error("insufficient funds for user {user_id}")]
     InsufficientFunds { user_id: String },
-
     #[error("invalid amount: {0}")]
     InvalidAmount(String),
-
     #[error("invalid account number format: {0}")]
     InvalidAccountFormat(String),
-
     #[error("account temporarily unavailable")]
     AccountUnavailable,
-
     #[error("operation failed: {0}")]
     OperationFailed(String),
 }
@@ -566,14 +596,14 @@ impl KafkaEventConsumer {
                                                 topic,
                                                 partition,
                                                 offset,
-                                                "redis unavailable after successful processing - offset not committed. message will be redelivered"
+                                                "redis error after successful processing - offset not committed. message will be redelivered"
                                             );
                                         }
                                     }
                                     Ok(())
                                 }
                                 Err(error_reason) => {
-                                    let redis_retry_count = match retry_tracker.get_retry_count(&topic, partition, offset).await {
+                                    let retry_count = match retry_tracker.get_retry_count(&topic, partition, offset).await {
                                         Ok(count) => count,
                                         Err(e) => {
                                             tracing::error!(
@@ -581,14 +611,11 @@ impl KafkaEventConsumer {
                                                 topic,
                                                 partition,
                                                 offset,
-                                                "redis unavailable during retry tracking - offset not committed"
+                                                "redis error during retry tracking - offset not committed"
                                             );
                                             return Ok(());
                                         }
                                     };
-
-                                    let header_retry_count = get_retry_count_from_message(&msg);
-                                    let retry_count = redis_retry_count.max(header_retry_count);
 
                                     if retry_count >= MAX_RETRIES {
                                         tracing::warn!(topic, partition, offset, retry_count, "max retries exceeded, sending to dlq");
@@ -619,7 +646,7 @@ impl KafkaEventConsumer {
                                                 tracing::warn!(topic, partition, offset, retry_count = retry_count + 1, "message processing failed, offset not committed - will be redelivered for retry");
                                             }
                                             Err(e) => {
-                                                tracing::error!(error = %e, topic, partition, offset, "redis unavailable during retry increment - offset not committed");
+                                                tracing::error!(error = %e, topic, partition, offset, "redis error during retry increment - offset not committed");
                                             }
                                         }
                                     }
@@ -798,10 +825,10 @@ pub async fn start_consumer_with_retry(
     dlq_producer: Arc<DlqProducer>,
 ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
     if let Err(e) = retry_tracker.health_check().await {
-        anyhow::bail!(
-            "redis unavailable at startup - cannot safely start consumer without retry tracking: {}",
-            e
-        )
+        tracing::warn!(
+            error = %e,
+            "redis unavailable at startup - consumer will start in degraded mode with in-memory retry tracking"
+        );
     }
 
     match check_kafka_connectivity(&config.bootstrap_servers, 10).await {
@@ -866,13 +893,20 @@ pub async fn start_consumer_with_retry(
             let kafka_ok = check_kafka_connectivity(&bootstrap_servers, 10)
                 .await
                 .is_ok();
-            let redis_ok = retry_tracker_clone.health_check().await.is_ok();
 
-            if kafka_ok && redis_ok {
-                tracing::info!(
-                    attempt = attempts,
-                    "kafka broker and redis are now available, starting consumer"
-                );
+            if kafka_ok {
+                let redis_ok = retry_tracker_clone.health_check().await.is_ok();
+                if redis_ok {
+                    tracing::info!(
+                        attempt = attempts,
+                        "kafka broker and redis are now available, starting consumer"
+                    );
+                } else {
+                    tracing::warn!(
+                        attempt = attempts,
+                        "kafka broker available but redis is not - starting consumer with in-memory retry tracking"
+                    );
+                }
 
                 let (_new_shutdown_tx, new_shutdown_rx) = mpsc::channel::<ConsumerCommand>(1);
 
@@ -896,17 +930,11 @@ pub async fn start_consumer_with_retry(
                     }
                 }
             } else {
-                if !kafka_ok {
-                    tracing::debug!(
-                        attempt = attempts,
-                        max_connect_retries,
-                        "kafka broker still unavailable",
-                    );
-                }
-
-                if !redis_ok {
-                    tracing::debug!(attempt = attempts, "redis still unavailable");
-                }
+                tracing::debug!(
+                    attempt = attempts,
+                    max_connect_retries,
+                    "kafka broker still unavailable",
+                );
             }
         }
     });
@@ -918,29 +946,6 @@ pub async fn start_consumer_with_retry(
     });
 
     Ok(Some(retry_handle))
-}
-
-fn extract_retry_count_from_header_value(value: Option<&[u8]>) -> u32 {
-    match value {
-        Some(bytes) => {
-            let s = std::str::from_utf8(bytes).ok();
-            s.and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
-        }
-        None => 0,
-    }
-}
-
-fn get_retry_count_from_message(msg: &BorrowedMessage<'_>) -> u32 {
-    let mut max_count: u32 = 0;
-    if let Some(headers) = msg.headers() {
-        for header in headers.iter() {
-            if header.key == "x-retry-count" {
-                let count = extract_retry_count_from_header_value(header.value);
-                max_count = max_count.max(count);
-            }
-        }
-    }
-    max_count
 }
 
 #[cfg(test)]
@@ -1090,33 +1095,6 @@ mod tests {
             result.unwrap_err(),
             ExternalEventError::AccountNotFound { .. }
         ));
-    }
-
-    #[test]
-    fn extract_retry_count_from_headers_returns_zero_when_absent() {
-        let count = extract_retry_count_from_header_value(None);
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn extract_retry_count_from_headers_parses_valid_value() {
-        let count = extract_retry_count_from_header_value(Some(b"3".as_slice()));
-        assert_eq!(count, 3);
-    }
-
-    #[test]
-    fn extract_retry_count_from_headers_returns_zero_for_invalid() {
-        let count = extract_retry_count_from_header_value(Some(b"abc".as_slice()));
-        assert_eq!(count, 0);
-    }
-
-    #[test]
-    fn max_of_redis_and_header_used() {
-        let redis_count: u32 = 2;
-        let header_count: u32 = 3;
-        assert_eq!(redis_count.max(header_count), 3);
-        assert_eq!(redis_count.max(0), 2);
-        assert_eq!(0.max(header_count), 3);
     }
 
     #[test]
