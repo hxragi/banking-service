@@ -99,7 +99,7 @@ impl TransactionRepository for SqlxTransactionRepository {
             FROM transactions t
             LEFT JOIN accounts from_acc ON t.from_account_id = from_acc.id
             LEFT JOIN accounts to_acc ON t.to_account_id = to_acc.id
-            WHERE t.account_id = $1
+            WHERE t.from_account_id = $1 OR t.to_account_id = $1
             ORDER BY t.created_at DESC
             LIMIT $2 OFFSET $3
         "#;
@@ -162,7 +162,7 @@ impl TransactionRepository for SqlxTransactionRepository {
         account_id: Uuid,
     ) -> Result<u64, TransactionRepositoryError> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transactions WHERE account_id = $1"
+            "SELECT COUNT(*) FROM transactions WHERE from_account_id = $1 OR to_account_id = $1"
         )
         .bind(account_id)
         .fetch_one(&self.pool)

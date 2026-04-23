@@ -24,8 +24,8 @@ impl TransactionWriteRepository<DbTransaction> for SqlxTransactionWriteRepositor
             .ok_or(TransactionRepositoryError::TransactionFailed)?;
 
         sqlx::query(
-            "INSERT INTO transactions 
-             (id, kind, amount, from_account_id, to_account_id, account_id) 
+            "INSERT INTO transactions
+             (id, kind, amount, from_account_id, to_account_id, account_id)
              VALUES ($1, $2::transaction_kind, $3, $4, $5, $6)",
         )
         .bind(id)

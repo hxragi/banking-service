@@ -164,8 +164,6 @@ async fn main() -> anyhow::Result<()> {
         transaction_repository.clone(),
     ));
 
-    let idempotency_ttl = Duration::from_secs(86400);
-
     let grpc_service = BankGrpcService::new(
         create_account_use_case.clone(),
         get_account_use_case.clone(),
