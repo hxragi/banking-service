@@ -15,6 +15,8 @@ use crate::application::{
     ports::MetricsPort, transaction_manager::FinancialTransactionManager,
     transfer::TransferUseCase, withdraw::WithdrawUseCase,
 };
+use crate::infrastructure::messaging::outbox_relay::OutboxRelay;
+use crate::infrastructure::repositories::sqlx_outbox_repository::SqlxOutboxRepository;
 use crate::infrastructure::{
     config::config::AppConfig, database::pool::create_with_config,
     database::transaction::DbTransaction, database::transaction_manager::Manager,
@@ -108,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 
     let idempotency_repo = Arc::new(SqlxIdempotencyRepository::new(pool.clone()));
 
-    let event_publisher = Arc::new(
+    let event_publisher: Arc<dyn EventPublisher + Send + Sync> = Arc::new(
         KafkaEventPublisher::new(&config.kafka)
             .map_err(|e| anyhow::anyhow!("Failed to create Kafka event publisher: {}", e))?,
     );
@@ -120,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         config.transaction_retry.max_delay_ms,
     );
 
+    let outbox_repo = Arc::new(SqlxOutboxRepository::new());
+
     let transaction_manager: Arc<TransactionManager> = Arc::new(
         TransactionManager::new(
             db_tx_manager.clone(),
@@ -127,11 +131,22 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(SqlxAccountTxRepository),
             Arc::new(SqlxTransactionWriteRepository),
             idempotency_repo.clone(),
-            Some(event_publisher as Arc<dyn EventPublisher>),
+            Some(event_publisher.clone()),
             Some(metrics.clone() as Arc<dyn MetricsPort>),
         )
-        .with_retry_config(retry_config),
+        .with_retry_config(retry_config)
+        .with_outbox_repository(outbox_repo),
     );
+
+    let outbox_relay = OutboxRelay::new(
+        pool.clone(),
+        event_publisher.clone(),
+        Duration::from_secs(5),
+        100,
+    );
+    tokio::spawn(async move {
+        outbox_relay.run().await;
+    });
 
     let balance_cache_ttl = Duration::from_secs(config.cache.balance_cache_ttl_secs);
     let balance_cache = BalanceCache::new(

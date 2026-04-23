@@ -180,6 +180,15 @@ pub trait TransactionManagerPort: Send + Sync {
     ) -> Result<TransactionOutput, TransactionError>;
 }
 
+#[async_trait::async_trait]
+pub trait OutboxRepository<Tx>: Send + Sync {
+    async fn save_in_tx(
+        &self,
+        event: &TransactionEvent,
+        tx: &mut Tx,
+    ) -> Result<(), TransactionRepositoryError>;
+}
+
 #[derive(Clone)]
 pub struct FinancialTransactionManager<M, Tx> {
     db_manager: M,
@@ -191,6 +200,7 @@ pub struct FinancialTransactionManager<M, Tx> {
     event_topic: String,
     metrics: Option<Arc<dyn MetricsPort + Send + Sync>>,
     retry_config: RetryConfig,
+    outbox_repository: Option<Arc<dyn OutboxRepository<Tx> + Send + Sync>>,
     _phantom: std::marker::PhantomData<Tx>,
 }
 
@@ -218,6 +228,7 @@ where
             event_topic: "bank.transaction.created".to_string(),
             metrics,
             retry_config: RetryConfig::default(),
+            outbox_repository: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -227,15 +238,22 @@ where
         self
     }
 
-    async fn publish_transaction_event(&self, transaction: &Transaction) {
+    pub fn with_outbox_repository(
+        mut self,
+        outbox_repository: Arc<dyn OutboxRepository<Tx> + Send + Sync>,
+    ) -> Self {
+        self.outbox_repository = Some(outbox_repository);
+        self
+    }
+
+    async fn publish_transaction_event(&self, event: &TransactionEvent) {
         if let Some(ref publisher) = self.event_publisher {
-            let event = TransactionEvent::from_transaction(transaction);
-            match publisher.publish(&self.event_topic, &event).await {
+            match publisher.publish(&self.event_topic, event).await {
                 Ok(_) => {
-                    tracing::info!(transaction_id = %transaction.id(), operation_type = %transaction.kind().as_str(), "transaction event published successfully");
+                    tracing::info!("transaction event published successfully");
                 }
                 Err(e) => {
-                    tracing::error!(transaction_id = %transaction.id(), error = %e, "failed to publish transaction event")
+                    tracing::error!(error = %e, "failed to publish transaction event")
                 }
             }
         }
@@ -265,6 +283,7 @@ where
         let db_manager = self.db_manager.clone();
         let idem_key_clone = idempotency_key.clone();
         let retry_config = self.retry_config;
+        let outbox_repo = self.outbox_repository.clone();
 
         let result = execute_with_retry(
             operation_clone,
@@ -275,11 +294,12 @@ where
             db_manager,
             idem_key_clone,
             retry_config,
+            outbox_repo,
         )
         .await;
 
         match result {
-            Ok(output) => {
+            Ok((output, event)) => {
                 if let Some(ref metrics) = self.metrics {
                     let op_str = match operation {
                         TransactionOperation::Deposit(_) => "deposit",
@@ -289,7 +309,7 @@ where
                     metrics.increment_operation(op_str, "success");
                 }
 
-                self.publish_transaction_event(output.transaction()).await;
+                self.publish_transaction_event(&event).await;
 
                 tracing::info!(operation_type = %operation.operation_type(), "transaction completed successfully");
                 Ok(output)
@@ -335,7 +355,8 @@ async fn execute_with_retry<M, Tx>(
     db_manager: M,
     idempotency_key: Option<String>,
     retry_config: RetryConfig,
-) -> Result<TransactionOutput, TransactionError>
+    outbox_repository: Option<Arc<dyn OutboxRepository<Tx> + Send + Sync>>,
+) -> Result<(TransactionOutput, TransactionEvent), TransactionError>
 where
     M: TransactionPort<Transaction = Tx>,
     Tx: TxTrait + Send,
@@ -381,6 +402,8 @@ where
 
         match result {
             Ok(output) => {
+                let event = TransactionEvent::from_transaction(output.transaction());
+
                 if let Some(key) = idempotency_key {
                     let response = match &output {
                         TransactionOutput::Deposit(acc, _) => acc.id().to_string(),
@@ -413,11 +436,21 @@ where
                     }
                 }
 
+                if let Some(ref outbox_repo) = outbox_repository {
+                    if let Err(e) = outbox_repo.save_in_tx(&event, &mut db_tx).await {
+                        tracing::error!(err = %e, "failed to save event to outbox, rolling back");
+                        let _ = db_tx.rollback().await;
+                        return Err(TransactionError::TransactionRepository(e));
+                    }
+                }
+
                 if let Err(e) = db_tx.commit().await {
                     tracing::error!(error = %e, "failed to commit transaction");
+
                     return Err(TransactionError::AccountUnavailable);
                 }
-                return Ok(output);
+
+                return Ok((output, event));
             }
             Err(e) => {
                 if let Err(rollback_err) = db_tx.rollback().await {
@@ -456,11 +489,11 @@ where
 }
 
 async fn parse_cached_response(
-    _response: &str,
+    response: &str,
     operation: &TransactionOperation,
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
-) -> Result<TransactionOutput, TransactionError> {
-    match operation {
+) -> Result<(TransactionOutput, TransactionEvent), TransactionError> {
+    let output = match operation {
         TransactionOperation::Deposit(input) => {
             let account = account_repository
                 .find_by_number(&input.account_number)
@@ -474,7 +507,7 @@ async fn parse_cached_response(
                 time::OffsetDateTime::now_utc(),
             );
 
-            Ok(TransactionOutput::Deposit(account, transaction))
+            TransactionOutput::Deposit(account, transaction)
         }
         TransactionOperation::Withdraw(input) => {
             let account = account_repository
@@ -489,7 +522,7 @@ async fn parse_cached_response(
                 time::OffsetDateTime::now_utc(),
             );
 
-            Ok(TransactionOutput::Withdraw(account, transaction))
+            TransactionOutput::Withdraw(account, transaction)
         }
         TransactionOperation::Transfer(input) => {
             let from_account = account_repository
@@ -510,15 +543,18 @@ async fn parse_cached_response(
             )
             .map_err(|_| TransactionError::SameAccountTransfer)?;
 
-            Ok(TransactionOutput::Transfer(
+            TransactionOutput::Transfer(
                 TransferResult {
                     from_account,
                     to_account,
                 },
                 transaction,
-            ))
+            )
         }
-    }
+    };
+
+    let event = TransactionEvent::from_transaction(output.transaction());
+    Ok((output, event))
 }
 
 async fn execute_deposit_in_tx<Tx: TxTrait + Send>(

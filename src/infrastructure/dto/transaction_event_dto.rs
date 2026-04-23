@@ -7,9 +7,6 @@ use uuid::Uuid;
 use crate::domain::transaction_event::TransactionEvent;
 use crate::domain::transaction_kind::TransactionKind;
 
-#[cfg(test)]
-use crate::domain::transaction::Transaction;
-
 fn serialize_operation_type<S>(kind: &TransactionKind, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -29,23 +26,17 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TransactionEventDto {
     pub transaction_id: Uuid,
-
     #[serde(
         rename = "operation_type",
         serialize_with = "serialize_operation_type",
         deserialize_with = "deserialize_operation_type"
     )]
     pub kind: TransactionKind,
-
     pub from_account_id: Option<Uuid>,
-
     pub to_account_id: Option<Uuid>,
-
     pub amount: u64,
-
     #[serde(with = "time::serde::iso8601")]
     pub timestamp: OffsetDateTime,
-
     #[serde(default = "default_schema_version")]
     pub schema_version: String,
 }
@@ -74,10 +65,25 @@ impl From<TransactionEvent> for TransactionEventDto {
     }
 }
 
+impl From<TransactionEventDto> for TransactionEvent {
+    fn from(dto: TransactionEventDto) -> Self {
+        Self {
+            transaction_id: dto.transaction_id,
+            kind: dto.kind,
+            from_account_id: dto.from_account_id,
+            to_account_id: dto.to_account_id,
+            amount: dto.amount,
+            timestamp: dto.timestamp,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{amount::Amount, transaction_event::TransactionEvent};
+    use crate::domain::{
+        amount::Amount, transaction::Transaction, transaction_event::TransactionEvent,
+    };
     use time::OffsetDateTime;
 
     fn create_test_transaction(kind: TransactionKind) -> Transaction {
