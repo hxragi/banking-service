@@ -1,10 +1,11 @@
-use async_trait::async_trait;
 use thiserror::Error;
 use uuid::Uuid;
 
 use crate::domain::account::Account;
 use crate::domain::account_number::AccountNumber;
 use crate::domain::owner::Owner;
+use crate::domain::owner_tier::OwnerTier;
+use crate::domain::tier::Tier;
 use crate::domain::transaction_event::TransactionEvent;
 
 #[derive(Debug, Clone)]
@@ -86,7 +87,7 @@ pub enum TransactionError {
     RollbackFailed(String),
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait AccountRepository: Send + Sync {
     async fn count_by_owner(&self, owner: &Owner) -> Result<u64, AccountRepositoryError>;
     async fn create(&self, account: &Account) -> Result<(), AccountRepositoryError>;
@@ -102,12 +103,12 @@ pub trait AccountRepository: Send + Sync {
     ) -> Result<(), AccountRepositoryError>;
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait AccountNumberGenerator: Send + Sync {
     async fn generate(&self) -> Result<AccountNumber, AccountNumberGeneratorError>;
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait TransactionRepository: Send + Sync {
     async fn find_by_account_id_paginated(
         &self,
@@ -121,13 +122,7 @@ pub trait TransactionRepository: Send + Sync {
     ) -> Result<u64, TransactionRepositoryError>;
 }
 
-#[async_trait]
-pub trait IdempotencyRepository: Send + Sync {
-    async fn get(&self, key: &str) -> Result<Option<String>, IdempotencyError>;
-    async fn save(&self, key: &str, response: &str) -> Result<(), IdempotencyError>;
-}
-
-#[async_trait]
+#[async_trait::async_trait]
 pub trait IdempotencyTxRepository<T>: Send + Sync
 where
     T: Transaction,
@@ -140,10 +135,7 @@ where
     ) -> Result<(), IdempotencyError>;
 }
 
-use crate::domain::owner_tier::OwnerTier;
-use crate::domain::tier::Tier;
-
-#[async_trait]
+#[async_trait::async_trait]
 pub trait OwnerTierRepository: Send + Sync {
     async fn get_or_default(&self, owner: &Owner) -> Result<OwnerTier, OwnerTierRepositoryError>;
 
@@ -179,7 +171,7 @@ pub enum EventPublishError {
     SerializationError(String),
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait AccountTxRepository<Tx>: Send + Sync {
     async fn find_by_number_for_update(
         &self,
@@ -202,7 +194,7 @@ pub trait AccountTxRepository<Tx>: Send + Sync {
     ) -> Result<Vec<Account>, AccountRepositoryError>;
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait TransactionWriteRepository<Tx>: Send + Sync {
     async fn create(
         &self,
@@ -211,7 +203,7 @@ pub trait TransactionWriteRepository<Tx>: Send + Sync {
     ) -> Result<(), TransactionRepositoryError>;
 }
 
-#[async_trait]
+#[async_trait::async_trait]
 pub trait EventPublisher: Send + Sync {
     async fn publish(&self, topic: &str, event: &TransactionEvent)
     -> Result<(), EventPublishError>;
@@ -230,10 +222,8 @@ pub trait TransactionPort: Send + Sync + Clone {
     ) -> impl std::future::Future<Output = Result<Self::Transaction, TransactionError>> + Send;
 }
 
-#[allow(dead_code)]
 pub trait Transaction: Send + Sync {
     fn commit(self) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send;
-
     fn rollback(self) -> impl std::future::Future<Output = Result<(), TransactionError>> + Send;
 }
 
@@ -244,7 +234,6 @@ pub enum RepositoryOperation {
     FindByNumber,
     FindByOwner,
     FindTransactions,
-
     GetTier,
     SetTier,
     GenerateAccountNumber,

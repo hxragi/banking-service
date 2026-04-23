@@ -5,22 +5,22 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
+use uuid::Uuid;
 
 use crate::application::{
     create_account::{CreateAccountInput, CreateAccountUseCase},
-    deposit::{DepositInput, DepositPort, DepositUseCase},
+    deposit::{DepositInput, DepositPort},
     get_account::{GetAccountInput, GetAccountUseCase},
     get_accounts::{GetAccountsInput, GetAccountsUseCase},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
-    transfer::{TransferInput, TransferPort, TransferUseCase},
-    withdraw::{WithdrawInput, WithdrawPort, WithdrawUseCase},
+    transfer::{TransferInput, TransferPort},
+    withdraw::{WithdrawInput, WithdrawPort},
 };
 use crate::domain::account_number::AccountNumber;
 use crate::domain::amount::Amount;
 use crate::domain::owner::Owner;
 use crate::domain::transaction_kind::TransactionKind;
 use crate::domain::user_id::UserId;
-use crate::infrastructure::services::idempotency_service::IdempotencyService;
 use crate::infrastructure::services::owner_extractor::OwnerExtractor;
 
 use super::super::dto::requests::{
@@ -43,7 +43,6 @@ pub struct AccountHttpHandler {
     withdraw_use_case: Arc<dyn WithdrawPort>,
     transfer_use_case: Arc<dyn TransferPort>,
     get_transactions_use_case: Arc<GetTransactionsUseCase>,
-    idempotency_service: Arc<IdempotencyService>,
 }
 
 impl AccountHttpHandler {
@@ -56,7 +55,6 @@ impl AccountHttpHandler {
         withdraw_use_case: Arc<dyn WithdrawPort>,
         transfer_use_case: Arc<dyn TransferPort>,
         get_transactions_use_case: Arc<GetTransactionsUseCase>,
-        idempotency_service: Arc<IdempotencyService>,
     ) -> Self {
         Self {
             create_account_use_case,
@@ -66,7 +64,6 @@ impl AccountHttpHandler {
             withdraw_use_case,
             transfer_use_case,
             get_transactions_use_case,
-            idempotency_service,
         }
     }
 
@@ -95,28 +92,6 @@ impl AccountHttpHandler {
         }
 
         Ok(())
-    }
-
-    async fn check_idempotency(
-        &self,
-        idempotency_key: &Option<String>,
-    ) -> Result<(Option<String>, Option<String>), HttpError> {
-        let key = match idempotency_key {
-            Some(k) => k,
-            None => return Ok((None, None)),
-        };
-
-        let check = self
-            .idempotency_service
-            .check_or_acquire(key)
-            .await
-            .map_err(|_| HttpError::SystemFailure("idempotency check failed".into()))?;
-
-        if let Some(cached) = check.cached_response {
-            return Ok((Some(key.clone()), Some(cached)));
-        }
-
-        Ok((Some(key.clone()), None))
     }
 }
 
@@ -155,28 +130,6 @@ pub async fn deposit(
 ) -> Result<(StatusCode, Json<DepositResponse>), HttpError> {
     let user_id = extract_user_id(&headers)?;
 
-    let (idempotency_key, cached) = handler.check_idempotency(&body.idempotency_key).await?;
-
-    if let Some(cached_key) = cached {
-        let account_number_parsed = AccountNumber::new(&account_number)
-            .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
-        let has_internal_key = headers.get("X-Internal-Api-Key").is_some();
-        handler
-            .verify_account_ownership(&account_number_parsed, &user_id, has_internal_key)
-            .await?;
-        let input = GetAccountInput {
-            account_number: account_number_parsed,
-        };
-        let account = handler.get_account_use_case.execute(input).await?;
-        return Ok((
-            StatusCode::OK,
-            Json(DepositResponse {
-                account: domain_to_http_account(&account),
-                idempotency_key: cached_key,
-            }),
-        ));
-    }
-
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
 
@@ -191,20 +144,14 @@ pub async fn deposit(
     let input = DepositInput {
         account_number,
         amount,
-        idempotency_key: idempotency_key.clone(),
+        idempotency_key: body.idempotency_key.clone(),
     };
     let account = handler.deposit_use_case.execute(input).await?;
 
-    let response_key = idempotency_key
+    let response_key = body
+        .idempotency_key
         .clone()
-        .unwrap_or_else(IdempotencyService::generate_key);
-
-    if let Some(key) = idempotency_key {
-        let _ = handler
-            .idempotency_service
-            .save_response(&key, &response_key)
-            .await;
-    }
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     Ok((
         StatusCode::OK,
@@ -223,28 +170,6 @@ pub async fn withdraw(
 ) -> Result<(StatusCode, Json<WithdrawResponse>), HttpError> {
     let user_id = extract_user_id(&headers)?;
 
-    let (idempotency_key, cached) = handler.check_idempotency(&body.idempotency_key).await?;
-
-    if let Some(cached_key) = cached {
-        let account_number_parsed = AccountNumber::new(&account_number)
-            .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
-        let has_internal_key = headers.get("X-Internal-Api-Key").is_some();
-        handler
-            .verify_account_ownership(&account_number_parsed, &user_id, has_internal_key)
-            .await?;
-        let input = GetAccountInput {
-            account_number: account_number_parsed,
-        };
-        let account = handler.get_account_use_case.execute(input).await?;
-        return Ok((
-            StatusCode::OK,
-            Json(WithdrawResponse {
-                account: domain_to_http_account(&account),
-                idempotency_key: cached_key,
-            }),
-        ));
-    }
-
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
 
@@ -259,20 +184,14 @@ pub async fn withdraw(
     let input = WithdrawInput {
         account_number,
         amount,
-        idempotency_key: idempotency_key.clone(),
+        idempotency_key: body.idempotency_key.clone(),
     };
     let account = handler.withdraw_use_case.execute(input).await?;
 
-    let response_key = idempotency_key
+    let response_key = body
+        .idempotency_key
         .clone()
-        .unwrap_or_else(IdempotencyService::generate_key);
-
-    if let Some(key) = idempotency_key {
-        let _ = handler
-            .idempotency_service
-            .save_response(&key, &response_key)
-            .await;
-    }
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     Ok((
         StatusCode::OK,
@@ -289,18 +208,6 @@ pub async fn transfer(
     Json(body): Json<TransferBody>,
 ) -> Result<(StatusCode, Json<TransferResponse>), HttpError> {
     let user_id = extract_user_id(&headers)?;
-
-    let (idempotency_key, cached) = handler.check_idempotency(&body.idempotency_key).await?;
-
-    if let Some(cached_key) = cached {
-        return Ok((
-            StatusCode::OK,
-            Json(TransferResponse {
-                transaction: None,
-                idempotency_key: cached_key,
-            }),
-        ));
-    }
 
     let from_account_number = AccountNumber::new(&body.from_account_number)
         .map_err(|_| HttpError::InvalidInput("invalid from account number".into()))?;
@@ -319,21 +226,15 @@ pub async fn transfer(
         from_account_number: from_account_number.clone(),
         to_account_number: to_account_number.clone(),
         amount,
-        idempotency_key: idempotency_key.clone(),
+        idempotency_key: body.idempotency_key.clone(),
     };
 
     let result = handler.transfer_use_case.execute(input).await?;
 
-    let response_key = idempotency_key
+    let response_key = body
+        .idempotency_key
         .clone()
-        .unwrap_or_else(IdempotencyService::generate_key);
-
-    if let Some(key) = idempotency_key {
-        let _ = handler
-            .idempotency_service
-            .save_response(&key, &response_key)
-            .await;
-    }
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     let transaction = TransactionResponse {
         id: result.transaction.id().to_string(),

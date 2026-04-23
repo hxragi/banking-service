@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 use crate::application::{
     change_tier::{ChangeTierInput, ChangeTierUseCase},
     create_account::{CreateAccountInput, CreateAccountUseCase},
-    deposit::{DepositInput, DepositPort, DepositUseCase},
+    deposit::{DepositInput, DepositPort},
     get_account::{GetAccountInput, GetAccountUseCase},
     get_accounts::{GetAccountsInput, GetAccountsUseCase},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
     ports::OperationError,
-    transfer::{TransferInput, TransferPort, TransferUseCase},
-    withdraw::{WithdrawInput, WithdrawPort, WithdrawUseCase},
+    transfer::{TransferInput, TransferPort},
+    withdraw::{WithdrawInput, WithdrawPort},
 };
 use crate::domain::account_number::AccountNumber;
 use crate::domain::amount::Amount;
@@ -19,7 +20,6 @@ use crate::domain::owner::Owner;
 use crate::domain::tier::Tier;
 use crate::domain::transaction_kind::TransactionKind;
 use crate::infrastructure::observability::metrics::Metrics;
-use crate::infrastructure::services::idempotency_service::IdempotencyService;
 use crate::infrastructure::services::owner_extractor::{OwnerExtractionError, OwnerExtractor};
 
 use super::interceptor::InternalRequestExt;
@@ -56,7 +56,6 @@ pub struct BankGrpcService {
     transfer_use_case: Arc<dyn TransferPort>,
     get_transactions_use_case: Arc<GetTransactionsUseCase>,
     change_tier_use_case: Arc<ChangeTierUseCase>,
-    idempotency_service: Arc<IdempotencyService>,
     metrics: Arc<Metrics>,
 }
 
@@ -71,7 +70,6 @@ impl BankGrpcService {
         transfer_use_case: Arc<dyn TransferPort>,
         get_transactions_use_case: Arc<GetTransactionsUseCase>,
         change_tier_use_case: Arc<ChangeTierUseCase>,
-        idempotency_service: Arc<IdempotencyService>,
         metrics: Arc<Metrics>,
     ) -> Self {
         Self {
@@ -83,7 +81,6 @@ impl BankGrpcService {
             transfer_use_case,
             get_transactions_use_case,
             change_tier_use_case,
-            idempotency_service,
             metrics,
         }
     }
@@ -264,24 +261,8 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<TransferResponse>, Status> {
         let req = request.into_inner();
 
-        let idempotency_key = if !req.idempotency_key.is_empty() {
-            let check = self
-                .idempotency_service
-                .check_or_acquire(&req.idempotency_key)
-                .await
-                .map_err(|_| Status::internal("idempotency check failed"))?;
-            if let Some(cached) = check.cached_response {
-                self.metrics.increment_cache_hit("idempotency");
-                return Ok(Response::new(TransferResponse {
-                    transaction: None,
-                    idempotency_key: cached,
-                }));
-            }
-            self.metrics.increment_cache_miss("idempotency");
-            Some(req.idempotency_key.clone())
-        } else {
-            None
-        };
+        let idempotency_key =
+            (!req.idempotency_key.is_empty()).then(|| req.idempotency_key.clone());
 
         let from_account_number = AccountNumber::new(&req.from_account_number)
             .map_err(|_| Status::invalid_argument("invalid from account number"))?;
@@ -311,16 +292,7 @@ impl BankService for BankGrpcService {
                     created_at: tx_result.transaction.created_at().to_string(),
                 };
 
-                let response_key = idempotency_key
-                    .clone()
-                    .unwrap_or_else(IdempotencyService::generate_key);
-
-                if let Some(key) = idempotency_key {
-                    let _ = self
-                        .idempotency_service
-                        .save_response(&key, &response_key)
-                        .await;
-                }
+                let response_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 Ok(Response::new(TransferResponse {
                     transaction: Some(transaction),
@@ -340,24 +312,8 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<DepositResponse>, Status> {
         let req = request.into_inner();
 
-        let idempotency_key = if !req.idempotency_key.is_empty() {
-            let check = self
-                .idempotency_service
-                .check_or_acquire(&req.idempotency_key)
-                .await
-                .map_err(|_| Status::internal("idempotency check failed"))?;
-            if let Some(cached) = check.cached_response {
-                self.metrics.increment_cache_hit("idempotency");
-                return Ok(Response::new(DepositResponse {
-                    account: None,
-                    idempotency_key: cached,
-                }));
-            }
-            self.metrics.increment_cache_miss("idempotency");
-            Some(req.idempotency_key.clone())
-        } else {
-            None
-        };
+        let idempotency_key =
+            (!req.idempotency_key.is_empty()).then(|| req.idempotency_key.clone());
 
         let account_number = AccountNumber::new(&req.account_number)
             .map_err(|_| Status::invalid_argument("invalid account number"))?;
@@ -373,16 +329,7 @@ impl BankService for BankGrpcService {
 
         match result {
             Ok(deposit_result) => {
-                let response_key = idempotency_key
-                    .clone()
-                    .unwrap_or_else(IdempotencyService::generate_key);
-
-                if let Some(key) = idempotency_key {
-                    let _ = self
-                        .idempotency_service
-                        .save_response(&key, &response_key)
-                        .await;
-                }
+                let response_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 self.metrics.increment_operation("deposit", "success");
                 Ok(Response::new(DepositResponse {
@@ -403,24 +350,8 @@ impl BankService for BankGrpcService {
     ) -> Result<Response<WithdrawResponse>, Status> {
         let req = request.into_inner();
 
-        let idempotency_key = if !req.idempotency_key.is_empty() {
-            let check = self
-                .idempotency_service
-                .check_or_acquire(&req.idempotency_key)
-                .await
-                .map_err(|_| Status::internal("idempotency check failed"))?;
-            if let Some(cached) = check.cached_response {
-                self.metrics.increment_cache_hit("idempotency");
-                return Ok(Response::new(WithdrawResponse {
-                    account: None,
-                    idempotency_key: cached,
-                }));
-            }
-            self.metrics.increment_cache_miss("idempotency");
-            Some(req.idempotency_key.clone())
-        } else {
-            None
-        };
+        let idempotency_key =
+            (!req.idempotency_key.is_empty()).then(|| req.idempotency_key.clone());
 
         let account_number = AccountNumber::new(&req.account_number)
             .map_err(|_| Status::invalid_argument("invalid account number"))?;
@@ -436,16 +367,7 @@ impl BankService for BankGrpcService {
 
         match result {
             Ok(withdraw_result) => {
-                let response_key = idempotency_key
-                    .clone()
-                    .unwrap_or_else(IdempotencyService::generate_key);
-
-                if let Some(key) = idempotency_key {
-                    let _ = self
-                        .idempotency_service
-                        .save_response(&key, &response_key)
-                        .await;
-                }
+                let response_key = idempotency_key.unwrap_or_else(|| Uuid::new_v4().to_string());
 
                 self.metrics.increment_operation("withdraw", "success");
                 Ok(Response::new(WithdrawResponse {

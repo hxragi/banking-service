@@ -41,7 +41,6 @@ use crate::infrastructure::{
     repositories::sqlx_transaction_repository::SqlxTransactionRepository,
     repositories::sqlx_transaction_write_repository::SqlxTransactionWriteRepository,
     services::balance_cache::BalanceCache,
-    services::idempotency_service::IdempotencyService,
 };
 use crate::presentation::grpc::bank_service::bank;
 use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
@@ -167,15 +166,6 @@ async fn main() -> anyhow::Result<()> {
     ));
 
     let idempotency_ttl = Duration::from_secs(86400);
-    let idempotency_service = Arc::new(
-        IdempotencyService::new(
-            idempotency_repo.clone(),
-            &config.dragonfly.url,
-            idempotency_ttl,
-            Some(metrics.clone()),
-        )
-        .await?,
-    );
 
     let grpc_service = BankGrpcService::new(
         create_account_use_case.clone(),
@@ -198,7 +188,6 @@ async fn main() -> anyhow::Result<()> {
             account_repo.clone(),
             owner_tier_repo.clone(),
         )),
-        idempotency_service.clone(),
         metrics.clone(),
     );
     let grpc_addr: std::net::SocketAddr =
@@ -232,7 +221,6 @@ async fn main() -> anyhow::Result<()> {
             balance_cache_arc.clone(),
         )),
         get_transactions_use_case.clone(),
-        idempotency_service.clone(),
     ));
 
     let http_app = create_router(http_handler).merge(

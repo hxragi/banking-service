@@ -3,9 +3,8 @@ use tokio::sync::Mutex;
 use crate::{
     application::ports::{
         AccountNumberGenerator, AccountNumberGeneratorError, AccountRepository,
-        AccountRepositoryError, IdempotencyError, IdempotencyRepository, OwnerTierRepository,
-        OwnerTierRepositoryError, PaginatedTransactions, TransactionRepository,
-        TransactionRepositoryError,
+        AccountRepositoryError, OwnerTierRepository, OwnerTierRepositoryError,
+        PaginatedTransactions, TransactionRepository, TransactionRepositoryError,
     },
     domain::{
         account::Account, account_number::AccountNumber, owner::Owner, owner_tier::OwnerTier,
@@ -154,19 +153,6 @@ impl TransactionRepository for MockTransactionRepository {
         _account_id: uuid::Uuid,
     ) -> Result<u64, TransactionRepositoryError> {
         Ok(0)
-    }
-}
-
-pub struct MockIdempotencyRepository;
-
-#[async_trait::async_trait]
-impl IdempotencyRepository for MockIdempotencyRepository {
-    async fn get(&self, _key: &str) -> Result<Option<String>, IdempotencyError> {
-        Ok(None)
-    }
-
-    async fn save(&self, _key: &str, _response: &str) -> Result<(), IdempotencyError> {
-        Ok(())
     }
 }
 

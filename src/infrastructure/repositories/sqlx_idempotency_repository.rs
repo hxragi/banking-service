@@ -1,29 +1,11 @@
 use sqlx::PgPool;
-use thiserror::Error;
 use time::OffsetDateTime;
 
-use crate::application::ports::{IdempotencyError, IdempotencyRepository, IdempotencyTxRepository};
+use crate::application::ports::{IdempotencyError, IdempotencyTxRepository};
 use crate::infrastructure::database::error::classify;
 
 pub struct SqlxIdempotencyRepository {
     pool: PgPool,
-}
-
-#[derive(Debug, Error)]
-pub enum SqlxIdempotencyError {
-    #[error("idempotency error: {0}")]
-    IdempotencyError(#[from] IdempotencyError),
-    #[error("database error: {0}")]
-    DatabaseError(#[from] sqlx::Error),
-}
-
-impl From<SqlxIdempotencyError> for IdempotencyError {
-    fn from(e: SqlxIdempotencyError) -> Self {
-        match e {
-            SqlxIdempotencyError::IdempotencyError(e) => e,
-            SqlxIdempotencyError::DatabaseError(_) => IdempotencyError::IdempotencyFailed,
-        }
-    }
 }
 
 impl SqlxIdempotencyRepository {
@@ -72,57 +54,6 @@ fn truncate_key(key: &str) -> &str {
         &key[..MAX_IDEMPOTENCY_KEY_LENGTH]
     } else {
         key
-    }
-}
-
-#[async_trait::async_trait]
-impl IdempotencyRepository for SqlxIdempotencyRepository {
-    async fn get(&self, key: &str) -> Result<Option<String>, IdempotencyError> {
-        let key = truncate_key(key);
-        let result: Result<Option<(String,)>, sqlx::Error> = sqlx::query_as(
-            "SELECT response_body FROM idempotency_keys WHERE key = $1 AND expires_at > NOW()",
-        )
-        .bind(key)
-        .fetch_optional(&self.pool)
-        .await;
-
-        match result {
-            Ok(Some((response,))) => Ok(Some(response)),
-            Ok(None) => Ok(None),
-            Err(e) => {
-                let context = classify(&e, "get");
-                tracing::error!(err = %context, key = %key, "failed to get idempotency response");
-                Err(IdempotencyError::IdempotencyFailed)
-            }
-        }
-    }
-
-    async fn save(&self, key: &str, response: &str) -> Result<(), IdempotencyError> {
-        let key = truncate_key(key);
-        let now = OffsetDateTime::now_utc();
-        let expires = now + time::Duration::hours(24);
-
-        let result = sqlx::query(
-            "INSERT INTO idempotency_keys (key, response_body, response_status_code, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (key) DO UPDATE SET response_body = $2, response_status_code = $3"
-        )
-        .bind(key)
-        .bind(response)
-        .bind(200i32)
-        .bind(now)
-        .bind(expires)
-        .execute(&self.pool)
-        .await;
-
-        match result {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let context = classify(&e, "save");
-                tracing::error!(err = %context, key = %key, "failed to save idempotency response");
-                Err(IdempotencyError::IdempotencyFailed)
-            }
-        }
     }
 }
 
