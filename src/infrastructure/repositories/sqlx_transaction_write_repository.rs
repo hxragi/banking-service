@@ -1,20 +1,16 @@
-use sqlx::{Postgres, Transaction as SqlxTransaction};
-
 use crate::{
     application::ports::{TransactionRepositoryError, TransactionWriteRepository},
     domain::transaction::Transaction,
-    infrastructure::database::error::map_sqlx_to_transaction_error,
+    infrastructure::database::{error::map_sqlx_to_transaction_error, transaction::DbTransaction},
 };
 
 pub struct SqlxTransactionWriteRepository;
 
 #[async_trait::async_trait]
-impl TransactionWriteRepository<SqlxTransaction<'static, Postgres>>
-    for SqlxTransactionWriteRepository
-{
+impl TransactionWriteRepository<DbTransaction> for SqlxTransactionWriteRepository {
     async fn create(
         &self,
-        tx: &mut SqlxTransaction<'static, Postgres>,
+        tx: &mut DbTransaction,
         transaction: &Transaction,
     ) -> Result<(), TransactionRepositoryError> {
         let id = transaction.id();
@@ -28,7 +24,9 @@ impl TransactionWriteRepository<SqlxTransaction<'static, Postgres>>
             .ok_or(TransactionRepositoryError::TransactionFailed)?;
 
         sqlx::query(
-            "INSERT INTO transactions (id, kind, amount, from_account_id, to_account_id, account_id) VALUES ($1, $2::transaction_kind, $3, $4, $5, $6)"
+            "INSERT INTO transactions 
+             (id, kind, amount, from_account_id, to_account_id, account_id) 
+             VALUES ($1, $2::transaction_kind, $3, $4, $5, $6)",
         )
         .bind(id)
         .bind(kind)
@@ -36,7 +34,7 @@ impl TransactionWriteRepository<SqlxTransaction<'static, Postgres>>
         .bind(from_account_id)
         .bind(to_account_id)
         .bind(account_id)
-        .execute(&mut **tx)
+        .execute(tx.as_sqlx())
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "failed to create transaction record");

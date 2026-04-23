@@ -2,7 +2,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 
 use crate::application::ports::{IdempotencyError, IdempotencyTxRepository};
-use crate::infrastructure::database::error::classify;
+use crate::infrastructure::database::{error::classify, transaction::DbTransaction};
 
 pub struct SqlxIdempotencyRepository {
     pool: PgPool,
@@ -58,30 +58,29 @@ fn truncate_key(key: &str) -> &str {
 }
 
 #[async_trait::async_trait]
-impl IdempotencyTxRepository<sqlx::Transaction<'static, sqlx::Postgres>>
-    for SqlxIdempotencyRepository
-{
+impl IdempotencyTxRepository<DbTransaction> for SqlxIdempotencyRepository {
     async fn save_in_tx(
         &self,
         key: &str,
         response: &str,
-        tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+        tx: &mut DbTransaction,
     ) -> Result<(), IdempotencyError> {
         let key = truncate_key(key);
         let now = OffsetDateTime::now_utc();
         let expires = now + time::Duration::hours(24);
 
         let insert_result = sqlx::query(
-            "INSERT INTO idempotency_keys (key, response_body, response_status_code, created_at, expires_at)
+            "INSERT INTO idempotency_keys 
+             (key, response_body, response_status_code, created_at, expires_at)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (key) DO NOTHING"
+             ON CONFLICT (key) DO NOTHING",
         )
         .bind(key)
         .bind(response)
         .bind(200i32)
         .bind(now)
         .bind(expires)
-        .execute(&mut **tx)
+        .execute(tx.as_sqlx())
         .await;
 
         match insert_result {
@@ -92,18 +91,16 @@ impl IdempotencyTxRepository<sqlx::Transaction<'static, sqlx::Postgres>>
                 let stored: Result<(String,), sqlx::Error> =
                     sqlx::query_as("SELECT response_body FROM idempotency_keys WHERE key = $1")
                         .bind(key)
-                        .fetch_one(&mut **tx)
+                        .fetch_one(tx.as_sqlx())
                         .await;
 
                 match stored {
-                    Ok((cached_response,)) => {
-                        return Err(IdempotencyError::KeyAlreadyExists {
-                            response: cached_response,
-                        });
-                    }
+                    Ok((cached_response,)) => Err(IdempotencyError::KeyAlreadyExists {
+                        response: cached_response,
+                    }),
                     Err(e) => {
                         tracing::error!(err = %e, key = %key, "failed to fetch stored idempotency response");
-                        return Err(IdempotencyError::IdempotencyFailed);
+                        Err(IdempotencyError::IdempotencyFailed)
                     }
                 }
             }

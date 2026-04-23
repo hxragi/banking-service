@@ -16,9 +16,8 @@ use crate::application::{
     transfer::TransferUseCase, withdraw::WithdrawUseCase,
 };
 use crate::infrastructure::{
-    config::config::AppConfig,
-    database::pool::create_with_config,
-    database::transaction::{DbTransaction, Manager},
+    config::config::AppConfig, database::pool::create_with_config,
+    database::transaction::DbTransaction, database::transaction_manager::Manager,
     generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
 };
 use crate::infrastructure::{

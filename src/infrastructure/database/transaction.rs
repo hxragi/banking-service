@@ -1,44 +1,51 @@
-use sqlx::{PgPool, Postgres, Transaction};
-use std::sync::Arc;
+use std::ops::DerefMut;
 
-use crate::application::ports::{TransactionError, TransactionPort};
+use sqlx::{PgConnection, Postgres, Transaction as SqlxTransaction};
 
-pub type DbTransaction = Transaction<'static, Postgres>;
+use crate::application::ports::{Transaction as TransactionTrait, TransactionError};
 
-#[derive(Clone)]
-pub struct Manager {
-    pool: Arc<PgPool>,
+#[derive(Debug)]
+pub struct DbTransaction {
+    inner: Option<SqlxTransaction<'static, Postgres>>,
 }
 
-impl Manager {
-    pub fn new(pool: PgPool) -> Self {
-        Self {
-            pool: Arc::new(pool),
+impl DbTransaction {
+    pub(crate) fn new(inner: SqlxTransaction<'static, Postgres>) -> Self {
+        Self { inner: Some(inner) }
+    }
+
+    pub(crate) fn as_sqlx(&mut self) -> &mut PgConnection {
+        self.inner
+            .as_mut()
+            .expect("transaction already consumer")
+            .deref_mut()
+    }
+}
+
+impl TransactionTrait for DbTransaction {
+    async fn commit(mut self) -> Result<(), TransactionError> {
+        if let Some(tx) = self.inner.take() {
+            tx.commit()
+                .await
+                .map_err(|e| TransactionError::CommitFailed(e.to_string()))?;
         }
+        Ok(())
+    }
+
+    async fn rollback(mut self) -> Result<(), TransactionError> {
+        if let Some(tx) = self.inner.take() {
+            tx.rollback()
+                .await
+                .map_err(|e| TransactionError::RollbackFailed(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
-impl TransactionPort for Manager {
-    type Transaction = Transaction<'static, Postgres>;
-
-    async fn begin(&self) -> Result<Self::Transaction, TransactionError> {
-        self.pool
-            .begin()
-            .await
-            .map_err(|e| TransactionError::CommitFailed(e.to_string()))
-    }
-}
-
-impl<'a> crate::application::ports::Transaction for Transaction<'a, Postgres> {
-    async fn commit(self) -> Result<(), TransactionError> {
-        sqlx::Transaction::commit(self)
-            .await
-            .map_err(|e| TransactionError::CommitFailed(e.to_string()))
-    }
-
-    async fn rollback(self) -> Result<(), TransactionError> {
-        sqlx::Transaction::rollback(self)
-            .await
-            .map_err(|e| TransactionError::RollbackFailed(e.to_string()))
+impl Drop for DbTransaction {
+    fn drop(&mut self) {
+        if self.inner.is_some() {
+            tracing::warn!("DbTransaction dropper without explicit commit/rollback")
+        }
     }
 }
