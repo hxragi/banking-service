@@ -29,8 +29,8 @@ impl From<OperationError> for HttpError {
             OperationError::InvalidInput { field, reason } => {
                 HttpError::InvalidInput(format!("invalid {}: {}", field, reason))
             }
-            OperationError::RepositoryError { operation } => {
-                tracing::error!(operation = ?operation, "repository error");
+            OperationError::RepositoryError { operation, reason } => {
+                tracing::error!(operation = ?operation, reason = %reason, "repository error");
                 HttpError::SystemFailure("internal server error".into())
             }
             OperationError::TierLimitExceeded => {

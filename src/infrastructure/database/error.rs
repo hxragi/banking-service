@@ -42,7 +42,9 @@ pub fn map_sqlx_to_account_error(err: sqlx::Error) -> AccountRepositoryError {
                 reason: classify(&err, "database"),
             },
         },
-        sqlx::Error::PoolTimedOut => AccountRepositoryError::LockTimeout,
+        sqlx::Error::PoolTimedOut => {
+            AccountRepositoryError::ConnectionError("connection pool timeout".to_string())
+        }
         sqlx::Error::Io(io_err) => {
             AccountRepositoryError::ConnectionError(format!("I/O error: {}", io_err))
         }
@@ -68,12 +70,14 @@ pub fn map_sqlx_to_transaction_error(err: sqlx::Error) -> TransactionRepositoryE
             Some("08006") | Some("08001") | Some("08004") => {
                 TransactionRepositoryError::ConnectionError(db_err.message().to_string())
             }
-            _ => TransactionRepositoryError::TransactionFailed,
+            _ => TransactionRepositoryError::TransactionFailed(classify(&err, "database")),
         },
-        sqlx::Error::PoolTimedOut => TransactionRepositoryError::LockTimeout,
+        sqlx::Error::PoolTimedOut => {
+            TransactionRepositoryError::ConnectionError("connection pool timeout".to_string())
+        }
         sqlx::Error::Io(io_err) => {
             TransactionRepositoryError::ConnectionError(format!("I/O error: {}", io_err))
         }
-        _ => TransactionRepositoryError::TransactionFailed,
+        _ => TransactionRepositoryError::TransactionFailed(classify(&err, "database")),
     }
 }

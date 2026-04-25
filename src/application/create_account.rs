@@ -137,7 +137,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(OperationError::RepositoryError { operation })
+            Err(OperationError::RepositoryError { operation, reason: _ })
             if operation == RepositoryOperation::CountByOwner
         ));
     }
@@ -165,7 +165,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(OperationError::RepositoryError { operation })
+            Err(OperationError::RepositoryError { operation, reason: _ })
             if operation == RepositoryOperation::CreateAccount
         ));
     }
@@ -193,7 +193,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(OperationError::RepositoryError { operation })
+            Err(OperationError::RepositoryError { operation, reason: _ })
             if operation == RepositoryOperation::GenerateAccountNumber
         ));
         let accounts: tokio::sync::MutexGuard<Vec<Account>> = repo.accounts.lock().await;

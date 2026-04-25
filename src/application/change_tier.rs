@@ -374,7 +374,7 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(OperationError::RepositoryError { operation })
+            Err(OperationError::RepositoryError { operation, reason: _ })
             if operation == RepositoryOperation::CountByOwner
         ));
     }

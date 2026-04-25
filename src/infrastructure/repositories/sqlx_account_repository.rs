@@ -2,7 +2,7 @@ use sqlx::PgPool;
 
 use crate::{
     application::ports::{AccountRepository, AccountRepositoryError},
-    domain::{account::Account, account_number::AccountNumber, owner::Owner, user_id},
+    domain::{account::Account, account_number::AccountNumber, owner::Owner},
     infrastructure::database::{error::classify, row_mapping::row_to_account},
 };
 

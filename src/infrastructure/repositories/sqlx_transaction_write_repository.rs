@@ -19,9 +19,11 @@ impl TransactionWriteRepository<DbTransaction> for SqlxTransactionWriteRepositor
         let from_account_id = transaction.source_account_id();
         let to_account_id = transaction.destination_account_id();
 
-        let account_id = from_account_id
-            .or(to_account_id)
-            .ok_or(TransactionRepositoryError::TransactionFailed)?;
+        let account_id = from_account_id.or(to_account_id).ok_or_else(|| {
+            TransactionRepositoryError::TransactionFailed(
+                "transaction has no source or destination account".into(),
+            )
+        })?;
 
         sqlx::query(
             "INSERT INTO transactions

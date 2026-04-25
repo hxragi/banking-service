@@ -55,8 +55,8 @@ pub enum OwnerTierRepositoryError {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum TransactionRepositoryError {
-    #[error("transaction failed")]
-    TransactionFailed,
+    #[error("transaction failed: {0}")]
+    TransactionFailed(String),
     #[error("lock timeout - operation should be retried")]
     LockTimeout,
     #[error("deadlock detected")]
@@ -249,8 +249,11 @@ pub enum OperationError {
     InsufficientFunds,
     #[error("invalid input: {field} - {reason}")]
     InvalidInput { field: String, reason: String },
-    #[error("repository error: {operation:?}")]
-    RepositoryError { operation: RepositoryOperation },
+    #[error("repository error: {operation:?} - {reason}")]
+    RepositoryError {
+        operation: RepositoryOperation,
+        reason: String,
+    },
     #[error("tier limit exceeded")]
     TierLimitExceeded,
     #[error("tier downgrade not allowed: {reason}")]
@@ -279,7 +282,7 @@ impl From<AccountRepositoryError> for OperationError {
                 OperationError::UniqueConstraintViolation(msg)
             }
             AccountRepositoryError::ConnectionError(msg) => OperationError::ConnectionError(msg),
-            AccountRepositoryError::OperationFailed { operation, .. } => {
+            AccountRepositoryError::OperationFailed { operation, reason } => {
                 let op = match operation.as_str() {
                     "count_by_owner" => RepositoryOperation::CountByOwner,
                     "create" => RepositoryOperation::CreateAccount,
@@ -287,7 +290,10 @@ impl From<AccountRepositoryError> for OperationError {
                     "find_by_owner" => RepositoryOperation::FindByOwner,
                     _ => RepositoryOperation::CreateAccount,
                 };
-                OperationError::RepositoryError { operation: op }
+                OperationError::RepositoryError {
+                    operation: op,
+                    reason,
+                }
             }
             AccountRepositoryError::LimitExceeded => OperationError::TierLimitExceeded,
         }
@@ -305,12 +311,21 @@ impl From<TransactionRepositoryError> for OperationError {
             TransactionRepositoryError::UniqueConstraintViolation(msg) => {
                 OperationError::UniqueConstraintViolation(msg)
             }
+            TransactionRepositoryError::CheckConstraintViolation(msg) => {
+                OperationError::RepositoryError {
+                    operation: RepositoryOperation::FindTransactions,
+                    reason: msg,
+                }
+            }
             TransactionRepositoryError::ConnectionError(msg) => {
                 OperationError::ConnectionError(msg)
             }
-            _ => OperationError::RepositoryError {
-                operation: RepositoryOperation::FindTransactions,
-            },
+            TransactionRepositoryError::TransactionFailed(reason) => {
+                OperationError::RepositoryError {
+                    operation: RepositoryOperation::FindTransactions,
+                    reason,
+                }
+            }
         }
     }
 }
@@ -319,6 +334,7 @@ impl From<AccountNumberGeneratorError> for OperationError {
     fn from(_err: AccountNumberGeneratorError) -> Self {
         OperationError::RepositoryError {
             operation: RepositoryOperation::GenerateAccountNumber,
+            reason: "account number generation failed".to_string(),
         }
     }
 }
@@ -326,13 +342,16 @@ impl From<AccountNumberGeneratorError> for OperationError {
 impl From<OwnerTierRepositoryError> for OperationError {
     fn from(err: OwnerTierRepositoryError) -> Self {
         match err {
-            OwnerTierRepositoryError::OperationFailed { operation, .. } => {
+            OwnerTierRepositoryError::OperationFailed { operation, reason } => {
                 let op = match operation.as_str() {
                     "get_or_default" => RepositoryOperation::GetTier,
                     "set_tier" => RepositoryOperation::SetTier,
                     _ => RepositoryOperation::GetTier,
                 };
-                OperationError::RepositoryError { operation: op }
+                OperationError::RepositoryError {
+                    operation: op,
+                    reason,
+                }
             }
         }
     }

@@ -167,7 +167,9 @@ mod tests {
             &self,
             _account_id: Uuid,
         ) -> Result<u64, TransactionRepositoryError> {
-            Err(TransactionRepositoryError::TransactionFailed)
+            Err(TransactionRepositoryError::TransactionFailed(
+                "not implemented in test".into(),
+            ))
         }
     }
 

@@ -31,17 +31,25 @@ impl SqlxTransactionRepository {
         to_account_id: Option<Uuid>,
         created_at: OffsetDateTime,
     ) -> Result<Transaction, TransactionRepositoryError> {
-        let kind = TransactionKind::from_str(&kind_str)
-            .map_err(|_| TransactionRepositoryError::TransactionFailed)?;
-        let amount =
-            u64::try_from(amount).map_err(|_| TransactionRepositoryError::TransactionFailed)?;
-        let amount =
-            Amount::new(amount).map_err(|_| TransactionRepositoryError::TransactionFailed)?;
+        let kind = TransactionKind::from_str(&kind_str).map_err(|_| {
+            TransactionRepositoryError::TransactionFailed(format!(
+                "invalid transaction kind in database: {}",
+                kind_str
+            ))
+        })?;
+        let amount = u64::try_from(amount).map_err(|_| {
+            TransactionRepositoryError::TransactionFailed("amount overflow in database row".into())
+        })?;
+        let amount = Amount::new(amount).map_err(|_| {
+            TransactionRepositoryError::TransactionFailed("invalid amount in database row".into())
+        })?;
 
         match kind {
             TransactionKind::Deposit => {
                 if from_account_id.is_some() || to_account_id.is_none() {
-                    return Err(TransactionRepositoryError::TransactionFailed);
+                    return Err(TransactionRepositoryError::TransactionFailed(
+                        "deposit row has invalid account references".into(),
+                    ));
                 }
                 Ok(Transaction::deposit(
                     id,
@@ -52,7 +60,9 @@ impl SqlxTransactionRepository {
             }
             TransactionKind::Withdraw => {
                 if from_account_id.is_none() || to_account_id.is_some() {
-                    return Err(TransactionRepositoryError::TransactionFailed);
+                    return Err(TransactionRepositoryError::TransactionFailed(
+                        "withdraw row has invalid account references".into(),
+                    ));
                 }
                 Ok(Transaction::withdraw(
                     id,
@@ -63,7 +73,9 @@ impl SqlxTransactionRepository {
             }
             TransactionKind::Transfer => {
                 if from_account_id.is_none() || to_account_id.is_none() {
-                    return Err(TransactionRepositoryError::TransactionFailed);
+                    return Err(TransactionRepositoryError::TransactionFailed(
+                        "transfer row has invalid account references".into(),
+                    ));
                 }
                 Transaction::transfer(
                     id,
@@ -72,7 +84,7 @@ impl SqlxTransactionRepository {
                     to_account_id.unwrap(),
                     created_at,
                 )
-                .map_err(|_| TransactionRepositoryError::TransactionFailed)
+                .map_err(|e| TransactionRepositoryError::TransactionFailed(e.to_string()))
             }
         }
     }
@@ -113,7 +125,7 @@ impl TransactionRepository for SqlxTransactionRepository {
             .map_err(|e| {
                 let context = classify(&e, "find_transactions_paginated");
                 tracing::error!(err = %context, account_id = %account_id, "failed to find transactions");
-                TransactionRepositoryError::TransactionFailed
+                TransactionRepositoryError::TransactionFailed(context)
             })?;
 
         let transactions: Vec<TransactionWithAccounts> = rows
@@ -170,7 +182,7 @@ impl TransactionRepository for SqlxTransactionRepository {
         .map_err(|e| {
             let context = classify(&e, "count_transactions");
             tracing::error!(err = %context, account_id = %account_id, "failed to count transactions");
-            TransactionRepositoryError::TransactionFailed
+            TransactionRepositoryError::TransactionFailed(context)
         })?;
 
         Ok(count as u64)

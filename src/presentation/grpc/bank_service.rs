@@ -96,8 +96,8 @@ fn map_operation_error(err: OperationError) -> Status {
         OperationError::InvalidInput { field, reason } => {
             Status::invalid_argument(format!("invalid {}: {}", field, reason))
         }
-        OperationError::RepositoryError { operation } => {
-            tracing::error!(operation = ?operation, "repository error");
+        OperationError::RepositoryError { operation, reason } => {
+            tracing::error!(operation = ?operation, reason = %reason, "repository error");
             Status::internal("internal server error")
         }
         OperationError::TierLimitExceeded => Status::failed_precondition("account limit exceeded"),

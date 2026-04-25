@@ -489,7 +489,7 @@ where
 }
 
 async fn parse_cached_response(
-    response: &str,
+    _response: &str,
     operation: &TransactionOperation,
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
 ) -> Result<(TransactionOutput, TransactionEvent), TransactionError> {
@@ -741,6 +741,14 @@ mod tests {
     };
     use time::OffsetDateTime;
     use uuid::Uuid;
+
+    use std::sync::Arc;
+
+    use super::FinancialTransactionManager;
+    use crate::application::ports::IdempotencyTxRepository;
+    use crate::test_utils::fakes::{
+        FakeTransactionPort, InMemoryAccountTxRepository, InMemoryTransactionWriteRepository,
+    };
 
     fn create_test_account(number: &str, balance: u64) -> Account {
         Account::new(
@@ -1174,14 +1182,6 @@ mod tests {
             "account unavailable"
         );
     }
-
-    use std::sync::Arc;
-
-    use super::FinancialTransactionManager;
-    use crate::application::ports::IdempotencyTxRepository;
-    use crate::test_utils::fakes::{
-        FakeTransactionPort, InMemoryAccountTxRepository, InMemoryTransactionWriteRepository,
-    };
 
     struct FakeIdempotencyTxRepository;
 
