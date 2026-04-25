@@ -390,7 +390,7 @@ impl BankService for BankGrpcService {
         let account_number = AccountNumber::new(&req.account_number)
             .map_err(|_| Status::invalid_argument("invalid account number"))?;
 
-        let page = req.page;
+        let page = req.page.max(1);
         let page_size = req.page_size.clamp(1, 100);
 
         let input = GetTransactionsInput {

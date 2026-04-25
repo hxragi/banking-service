@@ -86,7 +86,7 @@ impl TransactionRepository for SqlxTransactionRepository {
         page: u32,
         page_size: u32,
     ) -> Result<PaginatedTransactions, TransactionRepositoryError> {
-        let offset = (page as i64) * (page_size as i64);
+        let offset = ((page.saturating_sub(1)) as i64) * (page_size as i64);
         let limit = page_size as i64;
 
         let total_count = self.count_by_account_id(account_id).await?;

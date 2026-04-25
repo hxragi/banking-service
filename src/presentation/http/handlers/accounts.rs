@@ -318,8 +318,8 @@ pub async fn get_transactions(
         .verify_account_ownership(&account_number, &user_id, has_internal_key)
         .await?;
 
-    let page = query.page.unwrap_or(0);
-    let page_size = query.page_size.unwrap_or(20).min(100);
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
 
     let input = GetTransactionsInput {
         account_number,
