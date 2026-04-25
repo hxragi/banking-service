@@ -1,15 +1,19 @@
-use std::sync::Arc;
+use std::{hint, sync::Arc};
 
-use tonic::{Request, Status};
+use tonic::{Request, Status, metadata::MetadataValue};
 
 fn constant_time_eq(a: &str, b: &str) -> bool {
     if a.len() != b.len() {
         return false;
     }
+
     let mut result: u8 = 0;
+
     for (x, y) in a.bytes().zip(b.bytes()) {
         result |= x ^ y;
+        result = hint::black_box(result);
     }
+
     result == 0
 }
 
@@ -31,13 +35,15 @@ impl tonic::service::Interceptor for InternalAuthInterceptor {
         let internal_api_key = self.internal_api_key.clone();
 
         if let Some(header_value) = request.metadata().get("x-internal-api-key") {
-            if let Ok(header_str) = header_value.to_str() {
-                if constant_time_eq(header_str, internal_api_key.as_str()) {
-                    request.metadata_mut().insert(
-                        "x-is-internal-request",
-                        tonic::metadata::MetadataValue::from_static("true"),
-                    );
-                }
+            let header_str = header_value
+                .to_str()
+                .map_err(|_| Status::unauthenticated("invalid internal api key encoding"))?;
+            if constant_time_eq(header_str, internal_api_key.as_str()) {
+                request
+                    .metadata_mut()
+                    .insert("x-is-internal-request", MetadataValue::from_static("true"));
+            } else {
+                return Err(Status::unauthenticated("invalid internal api key"));
             }
         }
 
