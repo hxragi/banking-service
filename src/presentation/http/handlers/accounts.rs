@@ -5,6 +5,8 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
 };
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::application::{
@@ -34,6 +36,33 @@ use super::super::dto::responses::{
 use super::super::errors::HttpError;
 use super::super::mappers::domain_to_http_account;
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,
+}
+
+#[derive(Clone)]
+pub struct JwtDecoder {
+    decoding_key: DecodingKey,
+    validation: Validation,
+}
+
+impl JwtDecoder {
+    pub fn new(secret: &[u8]) -> Self {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.validate_exp = false;
+        validation.required_spec_claims.remove("exp");
+        Self {
+            decoding_key: DecodingKey::from_secret(secret),
+            validation,
+        }
+    }
+
+    pub fn decode(&self, token: &str) -> Result<Claims, jsonwebtoken::errors::Error> {
+        decode::<Claims>(token, &self.decoding_key, &self.validation).map(|data| data.claims)
+    }
+}
+
 #[derive(Clone)]
 pub struct AccountHttpHandler {
     create_account_use_case: Arc<CreateAccountUseCase>,
@@ -43,6 +72,7 @@ pub struct AccountHttpHandler {
     withdraw_use_case: Arc<dyn WithdrawPort>,
     transfer_use_case: Arc<dyn TransferPort>,
     get_transactions_use_case: Arc<GetTransactionsUseCase>,
+    jwt_decoder: Arc<JwtDecoder>,
 }
 
 impl AccountHttpHandler {
@@ -55,6 +85,7 @@ impl AccountHttpHandler {
         withdraw_use_case: Arc<dyn WithdrawPort>,
         transfer_use_case: Arc<dyn TransferPort>,
         get_transactions_use_case: Arc<GetTransactionsUseCase>,
+        jwt_decoder: Arc<JwtDecoder>,
     ) -> Self {
         Self {
             create_account_use_case,
@@ -64,6 +95,7 @@ impl AccountHttpHandler {
             withdraw_use_case,
             transfer_use_case,
             get_transactions_use_case,
+            jwt_decoder,
         }
     }
 
@@ -95,13 +127,24 @@ impl AccountHttpHandler {
     }
 }
 
-fn extract_user_id(headers: &axum::http::HeaderMap) -> Result<UserId, HttpError> {
-    let user_id_str = headers
-        .get("X-USER-ID")
+fn extract_user_id_from_jwt(
+    headers: &axum::http::HeaderMap,
+    jwt_decoder: &JwtDecoder,
+) -> Result<UserId, HttpError> {
+    let auth_header = headers
+        .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| HttpError::InvalidInput("missing X-USER-ID header".into()))?;
+        .ok_or_else(|| HttpError::InvalidInput("missing authorization header".into()))?;
 
-    UserId::new(user_id_str).map_err(|_| HttpError::InvalidInput("invalid X-USER-ID header".into()))
+    let token = auth_header
+        .strip_prefix("Bearer ")
+        .ok_or_else(|| HttpError::InvalidInput("invalid authorization header format".into()))?;
+
+    let claims = jwt_decoder
+        .decode(token)
+        .map_err(|e| HttpError::InvalidInput(format!("invalid token: {e}")))?;
+
+    UserId::new(&claims.sub).map_err(|_| HttpError::InvalidInput("invalid user id in token".into()))
 }
 
 pub async fn create_account(
@@ -109,7 +152,7 @@ pub async fn create_account(
     headers: axum::http::HeaderMap,
     Json(_body): Json<Option<CreateAccountBody>>,
 ) -> Result<(StatusCode, Json<AccountResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let input = CreateAccountInput {
         owner: Owner::User(user_id),
@@ -128,7 +171,7 @@ pub async fn deposit(
     Path(account_number): Path<String>,
     Json(body): Json<DepositBody>,
 ) -> Result<(StatusCode, Json<DepositResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
@@ -168,7 +211,7 @@ pub async fn withdraw(
     Path(account_number): Path<String>,
     Json(body): Json<WithdrawBody>,
 ) -> Result<(StatusCode, Json<WithdrawResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
@@ -207,7 +250,7 @@ pub async fn transfer(
     headers: axum::http::HeaderMap,
     Json(body): Json<TransferBody>,
 ) -> Result<(StatusCode, Json<TransferResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let from_account_number = AccountNumber::new(&body.from_account_number)
         .map_err(|_| HttpError::InvalidInput("invalid from account number".into()))?;
@@ -263,7 +306,7 @@ pub async fn get_account(
     headers: axum::http::HeaderMap,
     Path(account_number): Path<String>,
 ) -> Result<(StatusCode, Json<AccountResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
@@ -308,7 +351,7 @@ pub async fn get_transactions(
     Path(account_number): Path<String>,
     Query(query): Query<GetTransactionsQuery>,
 ) -> Result<(StatusCode, Json<GetTransactionsResponse>), HttpError> {
-    let user_id = extract_user_id(&headers)?;
+    let user_id = extract_user_id_from_jwt(&headers, &handler.jwt_decoder)?;
 
     let account_number = AccountNumber::new(&account_number)
         .map_err(|_| HttpError::InvalidInput("invalid account number".into()))?;
@@ -363,29 +406,116 @@ pub async fn get_transactions(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Once;
+
+    use jsonwebtoken::{EncodingKey, Header, encode};
+
     use super::*;
 
+    const TEST_SECRET: &[u8] = b"test-secret-key";
+    static INIT_CRYPTO: Once = Once::new();
+
+    fn init_crypto() {
+        INIT_CRYPTO.call_once(|| {
+            jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER
+                .install_default()
+                .expect("crypto provider should install once")
+        });
+    }
+
+    fn test_decoder() -> JwtDecoder {
+        init_crypto();
+        JwtDecoder::new(TEST_SECRET)
+    }
+
+    fn test_token(sub: &str) -> String {
+        init_crypto();
+        let claims = Claims {
+            sub: sub.to_string(),
+        };
+
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(TEST_SECRET),
+        )
+        .expect("test token encoding should not fail")
+    }
+
     #[test]
-    fn extract_user_id_from_valid_header() {
+    fn jwt_decoder_decodes_valid_token() {
+        let token = test_token("user-123");
+        let decoder = test_decoder();
+        let claims = decoder.decode(&token).expect("valid token should decode");
+        assert_eq!(claims.sub, "user-123");
+    }
+
+    #[test]
+    fn jwt_decoder_fails_on_invalid_signature() {
+        let claims = Claims {
+            sub: "user-123".to_string(),
+        };
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(b"wrong-secret"),
+        )
+        .expect("test token encoding should not fail");
+        let decoder = test_decoder();
+        assert!(decoder.decode(&token).is_err());
+    }
+
+    #[test]
+    fn extract_user_id_from_valid_bearer_token() {
+        let token = test_token("user-123");
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("X-USER-ID", "user-123".parse().unwrap());
-        let result = extract_user_id(&headers);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", token).parse().unwrap(),
+        );
+        let result = extract_user_id_from_jwt(&headers, &test_decoder());
         assert!(result.is_ok());
         assert_eq!(result.unwrap().as_str(), "user-123");
     }
 
     #[test]
-    fn extract_user_id_missing_header_returns_error() {
+    fn extract_user_id_missing_authorization_header() {
         let headers = axum::http::HeaderMap::new();
-        let result = extract_user_id(&headers);
+        let result = extract_user_id_from_jwt(&headers, &test_decoder());
         assert!(result.is_err());
     }
 
     #[test]
-    fn extract_user_id_empty_header_returns_error() {
+    fn extract_user_id_invalid_header_format() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("X-USER-ID", "".parse().unwrap());
-        let result = extract_user_id(&headers);
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Basic dXNlcjoxMjM=".parse().unwrap(),
+        );
+        let result = extract_user_id_from_jwt(&headers, &test_decoder());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_user_id_invalid_token() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            "Bearer invalid.token".parse().unwrap(),
+        );
+        let result = extract_user_id_from_jwt(&headers, &test_decoder());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_user_id_invalid_user_id_in_claims() {
+        let token = test_token("     ");
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {}", token).parse().unwrap(),
+        );
+        let result = extract_user_id_from_jwt(&headers, &test_decoder());
         assert!(result.is_err());
     }
 }

@@ -45,6 +45,7 @@ use crate::infrastructure::{
 };
 use crate::presentation::grpc::bank_service::bank;
 use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
+use crate::presentation::http::handlers::accounts::JwtDecoder;
 use crate::presentation::http::{handlers::AccountHttpHandler, router::create_router};
 
 mod application;
@@ -216,6 +217,8 @@ async fn main() -> anyhow::Result<()> {
 
     let health_checker = Arc::new(HealthChecker::new(pool.clone()));
 
+    let jwt_decoder = Arc::new(JwtDecoder::new(config.jwt_config.as_bytes()));
+
     let http_handler = Arc::new(AccountHttpHandler::new(
         create_account_use_case,
         get_account_use_case.clone(),
@@ -233,6 +236,7 @@ async fn main() -> anyhow::Result<()> {
             balance_cache_arc.clone(),
         )),
         get_transactions_use_case.clone(),
+        jwt_decoder,
     ));
 
     let http_app = create_router(http_handler).merge(

@@ -125,6 +125,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub telemetry: TelemetryConfig,
     pub internal_api_key: String,
+    pub jwt_config: String,
 }
 
 fn default_max_connections() -> u32 {
