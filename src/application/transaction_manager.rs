@@ -3,6 +3,8 @@ use std::sync::Arc;
 use thiserror::Error;
 use uuid::Uuid;
 
+use rand::random;
+
 use crate::{
     application::ports::{
         AccountRepository, AccountRepositoryError, AccountTxRepository, EventPublisher,
@@ -477,7 +479,7 @@ where
                     );
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     delay_ms = (delay_ms * 2).min(retry_config.max_delay_ms);
-                    delay_ms += rand::random::<u64>() % 10;
+                    delay_ms += random::<u64>() % 10;
                     attempt += 1;
                     continue;
                 }

@@ -21,7 +21,7 @@ impl BalanceCache {
         metrics: Option<Arc<Metrics>>,
     ) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
-        let redis = client.get_multiplexed_tokio_connection().await?;
+        let redis = client.get_multiplexed_async_connection().await?;
 
         Ok(Self {
             redis: Arc::new(redis),

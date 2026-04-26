@@ -116,8 +116,8 @@ impl KafkaEventPublisher {
 
         tracing::info!(
             topic,
-            partition = delivery.0,
-            offset = delivery.1,
+            partition = delivery.partition,
+            offset = delivery.offset,
             event_id = %event.event_id,
             event_type = %event.event_type,
             "event published to Kafka"

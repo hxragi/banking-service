@@ -55,7 +55,7 @@ pub struct RetryTracker {
 impl RetryTracker {
     pub async fn new(redis_url: &str) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
-        let redis = client.get_multiplexed_tokio_connection().await?;
+        let redis = client.get_multiplexed_async_connection().await?;
         Ok(Self {
             redis,
             memory: Arc::new(TokioMutex::new(HashMap::new())),
@@ -697,7 +697,7 @@ impl KafkaEventConsumer {
 
         if let Some(parent_ctx) = parent_span_context {
             let parent_cx = opentelemetry::Context::new().with_remote_span_context(parent_ctx);
-            span.set_parent(parent_cx);
+            let _ = span.set_parent(parent_cx);
             tracing::debug!("trace context extracted from Kafka headers");
         } else {
             tracing::debug!("no trace context found in Kafka headers, creating new trace");

@@ -388,7 +388,7 @@ pub async fn get_transactions(
                 .transaction
                 .created_at()
                 .format(&time::format_description::well_known::Rfc3339)
-                .expect("RFC3339 formatting should never fail for valid timestamps"),
+                .unwrap_or_else(|_| t.transaction.created_at().to_string()),
         })
         .collect();
 
