@@ -277,28 +277,9 @@ where
             m.increment_operation("transaction", "started");
         }
 
-        let account_repo = self.account_repository.clone();
-        let account_tx_repo = self.account_tx_repository.clone();
-        let tx_write_repo = self.transaction_write_repository.clone();
-        let idem_tx_repo = self.idempotency_tx_repository.clone();
-        let operation_clone = operation.clone();
-        let db_manager = self.db_manager.clone();
-        let idem_key_clone = idempotency_key.clone();
-        let retry_config = self.retry_config;
-        let outbox_repo = self.outbox_repository.clone();
-
-        let result = execute_with_retry(
-            operation_clone,
-            account_repo,
-            account_tx_repo,
-            tx_write_repo,
-            idem_tx_repo,
-            db_manager,
-            idem_key_clone,
-            retry_config,
-            outbox_repo,
-        )
-        .await;
+        let result = self
+            .execute_with_retry(&operation, idempotency_key.as_deref())
+            .await;
 
         match result {
             Ok((output, event)) => {
@@ -331,6 +312,141 @@ where
             }
         }
     }
+
+    async fn execute_with_retry(
+        &self,
+        operation: &TransactionOperation,
+        idempotency_key: Option<&str>,
+    ) -> Result<(TransactionOutput, TransactionEvent), TransactionError> {
+        let mut attempt = 1u32;
+        let mut delay_ms = self.retry_config.base_delay_ms;
+
+        loop {
+            let mut db_tx = self.db_manager.begin().await.map_err(|e| {
+                tracing::error!(error = %e, "failed to begin transaction");
+                TransactionError::DbTransactionFailed(e.to_string())
+            })?;
+
+            let result = match operation {
+                TransactionOperation::Deposit(input) => {
+                    execute_deposit_in_tx(
+                        input.clone(),
+                        self.account_tx_repository.as_ref(),
+                        self.transaction_write_repository.as_ref(),
+                        &mut db_tx,
+                    )
+                    .await
+                }
+                TransactionOperation::Withdraw(input) => {
+                    execute_withdraw_in_tx(
+                        input.clone(),
+                        self.account_tx_repository.as_ref(),
+                        self.transaction_write_repository.as_ref(),
+                        &mut db_tx,
+                    )
+                    .await
+                }
+                TransactionOperation::Transfer(input) => {
+                    execute_transfer_in_tx(
+                        input.clone(),
+                        self.account_tx_repository.as_ref(),
+                        self.transaction_write_repository.as_ref(),
+                        &mut db_tx,
+                    )
+                    .await
+                }
+            };
+
+            match result {
+                Ok(output) => {
+                    let event = TransactionEvent::from_transaction(output.transaction());
+
+                    if let Some(key) = idempotency_key {
+                        let response = match &output {
+                            TransactionOutput::Deposit(acc, _) => acc.id().to_string(),
+                            TransactionOutput::Withdraw(acc, _) => acc.id().to_string(),
+                            TransactionOutput::Transfer(result, _) => {
+                                format!("{}:{}", result.from_account.id(), result.to_account.id())
+                            }
+                        };
+
+                        match self
+                            .idempotency_tx_repository
+                            .save_in_tx(key, &response, &mut db_tx)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(IdempotencyError::KeyAlreadyExists { response: cached }) => {
+                                let _ = db_tx.rollback().await;
+                                tracing::info!(idempotency_key = %key, "idempotency key already exists from concurrent request, returning cached result");
+                                return parse_cached_response(
+                                    &cached,
+                                    operation,
+                                    self.account_repository.as_ref(),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                tracing::error!(err = ?e, "failed to save idempotency key in transaction, rolling back");
+                                let _ = db_tx.rollback().await;
+                                return Err(TransactionError::Idempotency(e));
+                            }
+                        }
+                    }
+
+                    if let Some(ref outbox_repo) = self.outbox_repository
+                        && let Err(e) = outbox_repo.save_in_tx(&event, &mut db_tx).await
+                    {
+                        tracing::error!(err = %e, "failed to save event to outbox, rolling back");
+                        let _ = db_tx.rollback().await;
+                        return Err(TransactionError::TransactionRepository(e));
+                    }
+
+                    if let Err(e) = db_tx.commit().await {
+                        tracing::error!(error = %e, "failed to commit transaction");
+
+                        return Err(TransactionError::AccountUnavailable);
+                    }
+
+                    return Ok((output, event));
+                }
+                Err(e) => {
+                    if let Err(rollback_err) = db_tx.rollback().await {
+                        tracing::warn!(error = %rollback_err, "failed to rollback transaction");
+                    }
+
+                    let is_transient = matches!(
+                        &e,
+                        TransactionError::DbTransactionFailed(_)
+                            | TransactionError::AccountRepository(
+                                AccountRepositoryError::LockTimeout
+                            )
+                            | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
+                            | TransactionError::AccountRepository(
+                                AccountRepositoryError::SerializationFailure
+                            )
+                    );
+
+                    if is_transient && attempt < self.retry_config.max_attempts {
+                        tracing::warn!(
+                            error = %e,
+                            attempt = attempt,
+                            max_attempts = self.retry_config.max_attempts,
+                            delay_ms = delay_ms,
+                            "transient error detected, retrying transaction"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                        delay_ms = (delay_ms * 2).min(self.retry_config.max_delay_ms);
+                        delay_ms += random::<u64>() % 10;
+                        attempt += 1;
+                        continue;
+                    }
+
+                    return Err(e);
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -348,152 +464,10 @@ where
     }
 }
 
-async fn execute_with_retry<M, Tx>(
-    operation: TransactionOperation,
-    account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    account_tx_repository: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
-    transaction_write_repository: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
-    idempotency_repository: Arc<dyn IdempotencyTxRepository<Tx> + Send + Sync>,
-    db_manager: M,
-    idempotency_key: Option<String>,
-    retry_config: RetryConfig,
-    outbox_repository: Option<Arc<dyn OutboxRepository<Tx> + Send + Sync>>,
-) -> Result<(TransactionOutput, TransactionEvent), TransactionError>
-where
-    M: TransactionPort<Transaction = Tx>,
-    Tx: TxTrait + Send,
-{
-    let mut attempt = 1u32;
-    let mut delay_ms = retry_config.base_delay_ms;
-
-    loop {
-        let mut db_tx = db_manager.begin().await.map_err(|e| {
-            tracing::error!(error = %e, "failed to begin transaction");
-            TransactionError::DbTransactionFailed(e.to_string())
-        })?;
-
-        let result = match &operation {
-            TransactionOperation::Deposit(input) => {
-                execute_deposit_in_tx(
-                    input.clone(),
-                    account_tx_repository.clone(),
-                    transaction_write_repository.clone(),
-                    &mut db_tx,
-                )
-                .await
-            }
-            TransactionOperation::Withdraw(input) => {
-                execute_withdraw_in_tx(
-                    input.clone(),
-                    account_tx_repository.clone(),
-                    transaction_write_repository.clone(),
-                    &mut db_tx,
-                )
-                .await
-            }
-            TransactionOperation::Transfer(input) => {
-                execute_transfer_in_tx(
-                    input.clone(),
-                    account_tx_repository.clone(),
-                    transaction_write_repository.clone(),
-                    &mut db_tx,
-                )
-                .await
-            }
-        };
-
-        match result {
-            Ok(output) => {
-                let event = TransactionEvent::from_transaction(output.transaction());
-
-                if let Some(key) = idempotency_key {
-                    let response = match &output {
-                        TransactionOutput::Deposit(acc, _) => acc.id().to_string(),
-                        TransactionOutput::Withdraw(acc, _) => acc.id().to_string(),
-                        TransactionOutput::Transfer(result, _) => {
-                            format!("{}:{}", result.from_account.id(), result.to_account.id())
-                        }
-                    };
-
-                    match idempotency_repository
-                        .save_in_tx(&key, &response, &mut db_tx)
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(IdempotencyError::KeyAlreadyExists { response: cached }) => {
-                            let _ = db_tx.rollback().await;
-                            tracing::info!(idempotency_key = %key, "idempotency key already exists from concurrent request, returning cached result");
-                            return parse_cached_response(
-                                &cached,
-                                &operation,
-                                account_repository.clone(),
-                            )
-                            .await;
-                        }
-                        Err(e) => {
-                            tracing::error!(err = ?e, "failed to save idempotency key in transaction, rolling back");
-                            let _ = db_tx.rollback().await;
-                            return Err(TransactionError::Idempotency(e));
-                        }
-                    }
-                }
-
-                if let Some(ref outbox_repo) = outbox_repository {
-                    if let Err(e) = outbox_repo.save_in_tx(&event, &mut db_tx).await {
-                        tracing::error!(err = %e, "failed to save event to outbox, rolling back");
-                        let _ = db_tx.rollback().await;
-                        return Err(TransactionError::TransactionRepository(e));
-                    }
-                }
-
-                if let Err(e) = db_tx.commit().await {
-                    tracing::error!(error = %e, "failed to commit transaction");
-
-                    return Err(TransactionError::AccountUnavailable);
-                }
-
-                return Ok((output, event));
-            }
-            Err(e) => {
-                if let Err(rollback_err) = db_tx.rollback().await {
-                    tracing::warn!(error = %rollback_err, "failed to rollback transaction");
-                }
-
-                let is_transient = matches!(
-                    &e,
-                    TransactionError::DbTransactionFailed(_)
-                        | TransactionError::AccountRepository(AccountRepositoryError::LockTimeout)
-                        | TransactionError::AccountRepository(AccountRepositoryError::Deadlock)
-                        | TransactionError::AccountRepository(
-                            AccountRepositoryError::SerializationFailure
-                        )
-                );
-
-                if is_transient && attempt < retry_config.max_attempts {
-                    tracing::warn!(
-                        error = %e,
-                        attempt = attempt,
-                        max_attempts = retry_config.max_attempts,
-                        delay_ms = delay_ms,
-                        "transient error detected, retrying transaction"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    delay_ms = (delay_ms * 2).min(retry_config.max_delay_ms);
-                    delay_ms += random::<u64>() % 10;
-                    attempt += 1;
-                    continue;
-                }
-
-                return Err(e);
-            }
-        }
-    }
-}
-
 async fn parse_cached_response(
     _response: &str,
     operation: &TransactionOperation,
-    account_repository: Arc<dyn AccountRepository + Send + Sync>,
+    account_repository: &(dyn AccountRepository + Send + Sync),
 ) -> Result<(TransactionOutput, TransactionEvent), TransactionError> {
     let output = match operation {
         TransactionOperation::Deposit(input) => {
@@ -561,8 +535,8 @@ async fn parse_cached_response(
 
 async fn execute_deposit_in_tx<Tx: TxTrait + Send>(
     input: DepositInput,
-    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
-    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    account_tx_repo: &(dyn AccountTxRepository<Tx> + Send + Sync),
+    transaction_write_repo: &(dyn TransactionWriteRepository<Tx> + Send + Sync),
     tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
     let DepositInput {
@@ -601,8 +575,8 @@ async fn execute_deposit_in_tx<Tx: TxTrait + Send>(
 
 async fn execute_withdraw_in_tx<Tx: TxTrait + Send>(
     input: WithdrawInput,
-    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
-    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    account_tx_repo: &(dyn AccountTxRepository<Tx> + Send + Sync),
+    transaction_write_repo: &(dyn TransactionWriteRepository<Tx> + Send + Sync),
     tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
     let WithdrawInput {
@@ -641,8 +615,8 @@ async fn execute_withdraw_in_tx<Tx: TxTrait + Send>(
 
 async fn execute_transfer_in_tx<Tx: TxTrait + Send>(
     input: TransferInput,
-    account_tx_repo: Arc<dyn AccountTxRepository<Tx> + Send + Sync>,
-    transaction_write_repo: Arc<dyn TransactionWriteRepository<Tx> + Send + Sync>,
+    account_tx_repo: &(dyn AccountTxRepository<Tx> + Send + Sync),
+    transaction_write_repo: &(dyn TransactionWriteRepository<Tx> + Send + Sync),
     tx: &mut Tx,
 ) -> Result<TransactionOutput, TransactionError> {
     let TransferInput {
