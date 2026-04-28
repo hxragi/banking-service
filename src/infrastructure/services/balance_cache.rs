@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use redis::AsyncCommands;
+use redis::aio::ConnectionManager;
 use uuid::Uuid;
 
 use crate::application::ports::{BalanceCacheError, BalanceCachePort};
@@ -9,7 +10,7 @@ use crate::infrastructure::observability::metrics::Metrics;
 
 #[derive(Clone)]
 pub struct BalanceCache {
-    redis: Arc<redis::aio::MultiplexedConnection>,
+    redis: ConnectionManager,
     default_ttl: Duration,
     metrics: Option<Arc<Metrics>>,
 }
@@ -21,10 +22,10 @@ impl BalanceCache {
         metrics: Option<Arc<Metrics>>,
     ) -> anyhow::Result<Self> {
         let client = redis::Client::open(redis_url)?;
-        let redis = client.get_multiplexed_async_connection().await?;
+        let redis = ConnectionManager::new(client).await?;
 
         Ok(Self {
-            redis: Arc::new(redis),
+            redis,
             default_ttl,
             metrics,
         })
@@ -36,9 +37,10 @@ impl BalanceCache {
 
     async fn try_get(&self, account_id: &Uuid) -> Result<Option<u64>, BalanceCacheError> {
         let key = self.key(account_id);
-        let mut conn = (*self.redis).clone();
+        let mut conn = self.redis.clone();
 
-        match conn.get::<_, Option<u64>>(key).await {
+        let result: Result<Option<u64>, redis::RedisError> = conn.get(key).await;
+        match result {
             Ok(Some(balance)) => {
                 if let Some(ref metrics) = self.metrics {
                     metrics.increment_cache_hit("balance");
@@ -58,20 +60,20 @@ impl BalanceCache {
     async fn try_set(&self, account_id: Uuid, balance: u64) -> Result<(), BalanceCacheError> {
         let key = self.key(&account_id);
         let ttl_secs = self.default_ttl.as_secs();
-        let mut conn = (*self.redis).clone();
+        let mut conn = self.redis.clone();
 
-        conn.set_ex(key, balance, ttl_secs)
+        conn.set_ex::<_, _, ()>(key, balance, ttl_secs)
             .await
-            .map_err(|e| BalanceCacheError::OperationFailed(e.to_string()))
+            .map_err(|e: redis::RedisError| BalanceCacheError::OperationFailed(e.to_string()))
     }
 
     async fn try_invalidate(&self, account_id: &Uuid) -> Result<(), BalanceCacheError> {
         let key = self.key(account_id);
-        let mut conn = (*self.redis).clone();
+        let mut conn = self.redis.clone();
 
         conn.del::<_, ()>(key)
             .await
-            .map_err(|e| BalanceCacheError::OperationFailed(e.to_string()))
+            .map_err(|e: redis::RedisError| BalanceCacheError::OperationFailed(e.to_string()))
     }
 }
 

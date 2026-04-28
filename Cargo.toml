@@ -35,7 +35,7 @@ rand = { version = "0.10.1", default-features = false, features = ["thread_rng"]
 rdkafka = { version = "0.39.0", features = ["tokio", "ssl-vendored"] }
 sentry = { version = "0.47.0", features = ["tracing"], default-features = false }
 sentry-tracing = { version = "0.47.0", default-features = false }
-redis = { version = "1.2.0", features = ["tokio-comp"] }
+redis = { version = "1.2.0", features = ["tokio-comp", "connection-manager"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 jsonwebtoken = { version = "10.3.0", default-features = false, features = ["rust_crypto", "use_pem"] }
