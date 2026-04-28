@@ -45,8 +45,6 @@ USER bank
 EXPOSE 50051 8080 9090
 
 ENV RUST_LOG=info
-ENV DATABASE_URL=""
-ENV KAFKA_BOOTSTRAP_SERVERS=""
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD ["wget", "-q", "--spider", "http://localhost:8080/health"]
