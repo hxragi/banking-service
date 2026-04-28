@@ -1725,7 +1725,6 @@ dependencies = [
  "axum",
  "base64",
  "domain",
- "infrastructure",
  "jsonwebtoken",
  "prost",
  "serde",

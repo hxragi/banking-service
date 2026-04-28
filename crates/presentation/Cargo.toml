@@ -6,7 +6,6 @@ edition = "2024"
 [dependencies]
 domain = { path = "../domain" }
 application = { path = "../application" }
-infrastructure = { path = "../infrastructure/" }
 axum = { version = "0.8.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
 tonic = { version = "0.14.5", default-features = false, features = ["codegen", "server", "channel", "router"] }
 tonic-prost = { version = "0.14.5", default-features = false }

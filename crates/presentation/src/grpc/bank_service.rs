@@ -1,9 +1,13 @@
-use std::sync::Arc;
-
-use tonic::{Request, Response, Status};
-use uuid::Uuid;
-
-use crate::http::extractors::owner_extractor::{OwnerExtractionError, OwnerExtractor};
+use super::{interceptor::InternalRequestExt, mappers::domain_to_proto_account};
+use crate::{
+    grpc::bank_service::bank::{
+        ChangeTierRequest, ChangeTierResponse, CreateAccountRequest, CreateAccountResponse,
+        DepositRequest, DepositResponse, GetAccountRequest, GetAccountResponse, GetAccountsRequest,
+        GetAccountsResponse, GetTransactionsRequest, GetTransactionsResponse, TransferRequest,
+        TransferResponse, WithdrawRequest, WithdrawResponse, bank_service_server::BankService,
+    },
+    http::extractors::owner_extractor::{OwnerExtractionError, OwnerExtractor},
+};
 use application::{
     change_tier::{ChangeTierInput, ChangeTierUseCase},
     create_account::{CreateAccountInput, CreateAccountUseCase},
@@ -11,22 +15,17 @@ use application::{
     get_account::{GetAccountInput, GetAccountUseCase},
     get_accounts::{GetAccountsInput, GetAccountsUseCase},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
-    ports::OperationError,
+    ports::{MetricsPort, OperationError},
     transfer::{TransferInput, TransferPort},
     withdraw::{WithdrawInput, WithdrawPort},
 };
-use domain::account_number::AccountNumber;
-use domain::amount::Amount;
-use domain::owner::Owner;
-use domain::tier::Tier;
-use domain::transaction_kind::TransactionKind;
-use infrastructure::observability::metrics::Metrics;
-
-use super::interceptor::InternalRequestExt;
-use super::mappers::domain_to_proto_account;
-
-use crate::grpc::bank_service::bank::*;
-use crate::grpc::bank_service::bank_service_server::BankService;
+use domain::{
+    account_number::AccountNumber, amount::Amount, owner::Owner, tier::Tier,
+    transaction_kind::TransactionKind,
+};
+use std::sync::Arc;
+use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 tonic_include_protos::include_protos!();
 
@@ -56,7 +55,7 @@ pub struct BankGrpcService {
     transfer_use_case: Arc<dyn TransferPort>,
     get_transactions_use_case: Arc<GetTransactionsUseCase>,
     change_tier_use_case: Arc<ChangeTierUseCase>,
-    metrics: Arc<Metrics>,
+    metrics: Arc<dyn MetricsPort>,
 }
 
 impl BankGrpcService {
@@ -70,7 +69,7 @@ impl BankGrpcService {
         transfer_use_case: Arc<dyn TransferPort>,
         get_transactions_use_case: Arc<GetTransactionsUseCase>,
         change_tier_use_case: Arc<ChangeTierUseCase>,
-        metrics: Arc<Metrics>,
+        metrics: Arc<dyn MetricsPort>,
     ) -> Self {
         Self {
             create_account_use_case,
@@ -471,6 +470,7 @@ impl BankService for BankGrpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grpc::bank_service::bank::get_accounts_request;
     use tonic::metadata::MetadataValue;
 
     fn create_test_request_with_org() -> Request<GetAccountsRequest> {
