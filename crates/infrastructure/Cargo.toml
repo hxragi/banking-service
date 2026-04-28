@@ -1,0 +1,34 @@
+[package]
+name = "infrastructure"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+domain = { path = "../domain" }
+application = { path = "../application" }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "migrate"] }
+redis = { version = "1.2.0", features = ["tokio-comp", "connection-manager"] }
+rdkafka = { version = "0.39.0", features = ["tokio", "ssl-vendored"] }
+config = { version = "0.15.22", default-features = false }
+dotenvy = { version = "0.15.7", default-features = false }
+prometheus = { version = "0.14.0", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", default-features = false }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "sync", "signal"] }
+tracing = { version = "0.1.44", default-features = false }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "std"] }
+opentelemetry = { version = "0.31.0", features = ["trace"] }
+opentelemetry-otlp = { version = "0.31.1", features = ["http-json", "trace", "reqwest-client"] }
+opentelemetry-semantic-conventions = { version = "0.31", default-features = false }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+sentry = { version = "0.48.0", features = ["tracing"], default-features = false }
+sentry-tracing = { version = "0.48.0", default-features = false }
+anyhow = { version = "1.0.102", default-features = false }
+async-trait = { version = "0.1.89", default-features = false }
+uuid = { version = "1.23.0", features = ["v4", "serde"] }
+time = { version = "0.3.47", features = ["serde", "formatting", "parsing"] }
+thiserror = { version = "2.0.18", default-features = false }
+tracing-opentelemetry = { version = "0.32.1", default-features = false }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+axum = { version = "0.8.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
+

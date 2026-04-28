@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("starting service");
 
-    let _sentry_guard = init_sentry(&config.sentry);
+    let sentry_guard = init_sentry(&config.sentry);
 
     let metrics = setup_metrics()?;
     let metrics_registry = metrics.registry.clone();
