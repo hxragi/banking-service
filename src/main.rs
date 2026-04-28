@@ -113,9 +113,9 @@ async fn main() -> anyhow::Result<()> {
 
     let event_publisher: Arc<dyn EventPublisher + Send + Sync> = Arc::new(
         KafkaEventPublisher::new(&config.kafka)
-            .map_err(|e| anyhow::anyhow!("Failed to create Kafka event publisher: {}", e))?,
+            .map_err(|e| anyhow::anyhow!("failed to create Kafka event publisher: {}", e))?,
     );
-    tracing::info!("Kafka event publisher initialized");
+    tracing::info!("kafka event publisher initialized");
 
     let retry_config = RetryConfig::new(
         config.transaction_retry.max_attempts,
@@ -286,34 +286,58 @@ async fn main() -> anyhow::Result<()> {
     let kafka_check_interval_secs = 30;
     let consumer_shutdown_token = CancellationToken::new();
 
-    let retry_tracker = Arc::new(
-        RetryTracker::new(&config.dragonfly.url)
-            .await
-            .expect("Failed to create retry tracker"),
-    );
-    let dlq_producer = Arc::new(
-        DlqProducer::new(&config.kafka.bootstrap_servers).expect("Failed to create DLQ producer"),
-    );
+    let retry_tracker = RetryTracker::new(&config.dragonfly.url).await;
+    let dlq_producer = DlqProducer::new(&config.kafka.bootstrap_servers);
 
-    let consumer_handle = match start_consumer_with_retry(
-        consumer_config,
-        event_handler,
-        consumer_shutdown_rx,
-        kafka_check_interval_secs,
-        config.kafka.consumer_connect_max_retries,
-        config.kafka.consumer_connect_timeout_secs,
-        retry_tracker,
-        dlq_producer,
-    )
-    .await
-    {
-        Ok(Some(handle)) => {
-            tracing::info!("Kafka consumer started immediately for external events");
-            Some(handle)
+    let consumer_handle = match (retry_tracker, dlq_producer) {
+        (Ok(retry_tracker), Ok(dlq_producer)) => {
+            let retry_tracker = Arc::new(retry_tracker);
+            let dlq_producer = Arc::new(dlq_producer);
+            match start_consumer_with_retry(
+                consumer_config,
+                event_handler,
+                consumer_shutdown_rx,
+                kafka_check_interval_secs,
+                config.kafka.consumer_connect_max_retries,
+                config.kafka.consumer_connect_timeout_secs,
+                retry_tracker,
+                dlq_producer,
+            )
+            .await
+            {
+                Ok(Some(handle)) => {
+                    tracing::info!("kafka consumer started immediately for external events");
+                    Some(handle)
+                }
+                Ok(None) => {
+                    tracing::warn!(
+                        "service started in degraded mode - kafka unavailable. external event processing is temporarily disabled."
+                    );
+                    let shutdown_token = consumer_shutdown_token.clone();
+                    Some(tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                _ = tokio::time::sleep(Duration::from_secs(30)) => {},
+                                _ = shutdown_token.cancelled() => {
+                                    tracing::info!("degraded mode retry loop cancelled, shutting down gracefully");
+                                    break;
+                                }
+                            }
+                        }
+                    }))
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "failed to initialize kafka consumer retry mechanism. continuing without external event processing."
+                    );
+                    None
+                }
+            }
         }
-        Ok(None) => {
+        _ => {
             tracing::warn!(
-                "Service started in DEGRADED MODE - Kafka unavailable. Consumer will start automatically when Kafka becomes available. External event processing is temporarily disabled."
+                "service started in degraded mode - kafka/redis infrastructure unavailable. external event processing is temporarily disabled."
             );
             let shutdown_token = consumer_shutdown_token.clone();
             Some(tokio::spawn(async move {
@@ -327,13 +351,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             }))
-        }
-        Err(e) => {
-            tracing::error!(
-                error = %e,
-                "Failed to initialize Kafka consumer retry mechanism. Continuing without external event processing."
-            );
-            None
         }
     };
 
