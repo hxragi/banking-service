@@ -9,13 +9,11 @@ impl UserId {
     pub fn validate(input: &str) -> Result<&str, DomainError> {
         let trimmed = input.trim();
 
-        if trimmed.is_empty() {
-            Err(DomainError::InvalidUserId)
-        } else if trimmed.len() > 256 {
-            Err(DomainError::InvalidUserId)
-        } else {
-            Ok(trimmed)
+        if trimmed.is_empty() || trimmed.len() > 256 {
+            return Err(DomainError::InvalidUserId);
         }
+
+        Ok(trimmed)
     }
 
     pub fn new(input: &str) -> Result<Self, DomainError> {

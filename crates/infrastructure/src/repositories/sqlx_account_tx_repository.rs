@@ -73,6 +73,6 @@ impl AccountTxRepository<DbTransaction> for SqlxAccountTxRepository {
         .await
         .map_err(map_sqlx_to_account_error)?;
 
-        rows.iter().map(|row| row_to_account(row)).collect()
+        rows.iter().map(row_to_account).collect()
     }
 }

@@ -170,7 +170,7 @@ impl AccountRepository for SqlxAccountRepository {
 
         let accounts: Vec<Account> = rows
             .iter()
-            .map(|row| row_to_account(row))
+            .map(row_to_account)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| {
                 tracing::error!(err = %e, "failed to convert account row");

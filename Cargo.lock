@@ -1129,6 +1129,7 @@ dependencies = [
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
  "prometheus",
+ "rand 0.10.1",
  "rdkafka",
  "redis",
  "sentry",

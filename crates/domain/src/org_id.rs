@@ -9,13 +9,11 @@ impl OrgId {
     pub fn validate(input: &str) -> Result<&str, DomainError> {
         let trimmed = input.trim();
 
-        if trimmed.is_empty() {
-            Err(DomainError::InvalidOrgId)
-        } else if trimmed.len() > 256 {
-            Err(DomainError::InvalidOrgId)
-        } else {
-            Ok(trimmed)
+        if trimmed.is_empty() || trimmed.len() > 256 {
+            return Err(DomainError::InvalidOrgId);
         }
+
+        Ok(trimmed)
     }
 
     pub fn new(input: &str) -> Result<Self, DomainError> {

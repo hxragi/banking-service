@@ -1,12 +1,9 @@
+use domain::{
+    account::Account, account_number::AccountNumber, owner::Owner, owner_tier::OwnerTier,
+    tier::Tier, transaction_event::TransactionEvent,
+};
 use thiserror::Error;
 use uuid::Uuid;
-
-use domain::account::Account;
-use domain::account_number::AccountNumber;
-use domain::owner::Owner;
-use domain::owner_tier::OwnerTier;
-use domain::tier::Tier;
-use domain::transaction_event::TransactionEvent;
 
 #[derive(Debug, Clone)]
 pub struct TransactionWithAccounts {

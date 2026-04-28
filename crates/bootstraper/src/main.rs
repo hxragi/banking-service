@@ -5,8 +5,7 @@ use application::{
     get_account::GetAccountUseCase,
     get_accounts::GetAccountsUseCase,
     get_transactions::GetTransactionsUseCase,
-    ports::MetricsPort,
-    ports::{BalanceCachePort, EventPublisher},
+    ports::{BalanceCachePort, EventPublisher, MetricsPort},
     transaction_manager::{FinancialTransactionManager, RetryConfig},
     transfer::TransferUseCase,
     withdraw::WithdrawUseCase,
@@ -19,6 +18,7 @@ use infrastructure::{
     generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
     messaging::outbox_relay::OutboxRelay,
     repositories::sqlx_outbox_repository::SqlxOutboxRepository,
+    services::retrying_transaction_manager::RetryingTransactionManager,
     settings::settings::AppConfig,
 };
 use infrastructure::{
@@ -62,7 +62,8 @@ use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;
 use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
-type TransactionManager = FinancialTransactionManager<Manager, DbTransaction>;
+type TransactionManager =
+    RetryingTransactionManager<FinancialTransactionManager<Manager, DbTransaction>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -133,8 +134,8 @@ async fn main() -> anyhow::Result<()> {
 
     let outbox_repo = Arc::new(SqlxOutboxRepository::new());
 
-    let transaction_manager: Arc<TransactionManager> = Arc::new(
-        TransactionManager::new(
+    let core_manager = Arc::new(
+        FinancialTransactionManager::new(
             db_tx_manager.clone(),
             account_repo.clone(),
             Arc::new(SqlxAccountTxRepository),
@@ -143,9 +144,11 @@ async fn main() -> anyhow::Result<()> {
             Some(event_publisher.clone()),
             Some(metrics.clone() as Arc<dyn MetricsPort>),
         )
-        .with_retry_config(retry_config)
         .with_outbox_repository(outbox_repo),
     );
+
+    let transaction_manager: Arc<TransactionManager> =
+        Arc::new(RetryingTransactionManager::new(core_manager, retry_config));
 
     let outbox_relay = OutboxRelay::new(
         pool.clone(),
