@@ -1,33 +1,34 @@
-use std::sync::Arc;
-use std::time::Duration;
-
+use application::{
+    change_tier::ChangeTierUseCase,
+    create_account::CreateAccountUseCase,
+    deposit::DepositUseCase,
+    get_account::GetAccountUseCase,
+    get_accounts::GetAccountsUseCase,
+    get_transactions::GetTransactionsUseCase,
+    ports::MetricsPort,
+    ports::{BalanceCachePort, EventPublisher},
+    transaction_manager::{FinancialTransactionManager, RetryConfig},
+    transfer::TransferUseCase,
+    withdraw::WithdrawUseCase,
+};
 use axum::{Router, routing::get};
-use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
-use tonic::transport::Server;
-use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
-
-use crate::application::transaction_manager::RetryConfig;
-use crate::application::{
-    change_tier::ChangeTierUseCase, create_account::CreateAccountUseCase, deposit::DepositUseCase,
-    get_account::GetAccountUseCase, get_accounts::GetAccountsUseCase,
-    get_transactions::GetTransactionsUseCase, ports::BalanceCachePort, ports::EventPublisher,
-    ports::MetricsPort, transaction_manager::FinancialTransactionManager,
-    transfer::TransferUseCase, withdraw::WithdrawUseCase,
-};
-use crate::infrastructure::messaging::outbox_relay::OutboxRelay;
-use crate::infrastructure::repositories::sqlx_outbox_repository::SqlxOutboxRepository;
-use crate::infrastructure::{
-    config::config::AppConfig, database::pool::create_with_config,
-    database::transaction::DbTransaction, database::transaction_manager::Manager,
-    generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
-};
-use crate::infrastructure::{
-    messaging::kafka_consumer::{
-        ConsumerCommand, DlqProducer, ExternalEventHandlerImpl, KafkaConsumerConfig, RetryTracker,
-        start_consumer_with_retry,
+use infrastructure::{
+    database::{
+        pool::create_with_config, transaction::DbTransaction, transaction_manager::Manager,
     },
-    messaging::kafka_event_publisher::KafkaEventPublisher,
+    generators::sequence_account_number_generator::SequenceAccountNumberGenerator,
+    messaging::outbox_relay::OutboxRelay,
+    repositories::sqlx_outbox_repository::SqlxOutboxRepository,
+    settings::settings::AppConfig,
+};
+use infrastructure::{
+    messaging::{
+        kafka_consumer::{
+            ConsumerCommand, DlqProducer, ExternalEventHandlerImpl, KafkaConsumerConfig,
+            RetryTracker, start_consumer_with_retry,
+        },
+        kafka_event_publisher::KafkaEventPublisher,
+    },
     observability::{
         health::{HealthChecker, health_check, readiness_check},
         metrics::{create_metrics_router, setup_metrics},
@@ -35,24 +36,31 @@ use crate::infrastructure::{
         signal::shutdown_signal,
         telemetry::init_telemetry,
     },
-    repositories::sqlx_account_repository::SqlxAccountRepository,
-    repositories::sqlx_account_tx_repository::SqlxAccountTxRepository,
-    repositories::sqlx_idempotency_repository::SqlxIdempotencyRepository,
-    repositories::sqlx_owner_tier_repository::SqlxOwnerTierRepository,
-    repositories::sqlx_transaction_repository::SqlxTransactionRepository,
-    repositories::sqlx_transaction_write_repository::SqlxTransactionWriteRepository,
+    repositories::{
+        sqlx_account_repository::SqlxAccountRepository,
+        sqlx_account_tx_repository::SqlxAccountTxRepository,
+        sqlx_idempotency_repository::SqlxIdempotencyRepository,
+        sqlx_owner_tier_repository::SqlxOwnerTierRepository,
+        sqlx_transaction_repository::SqlxTransactionRepository,
+        sqlx_transaction_write_repository::SqlxTransactionWriteRepository,
+    },
     services::balance_cache::BalanceCache,
 };
-use crate::presentation::grpc::bank_service::bank;
-use crate::presentation::grpc::{BankGrpcService, InternalAuthInterceptor};
-use crate::presentation::http::handlers::accounts::JwtDecoder;
-use crate::presentation::http::{handlers::AccountHttpHandler, router::create_router};
-
-mod application;
-mod domain;
-mod infrastructure;
-mod presentation;
-mod test_utils;
+use presentation::{
+    grpc::{
+        bank_service::{BankGrpcService, bank},
+        interceptor::InternalAuthInterceptor,
+    },
+    http::{
+        handlers::{AccountHttpHandler, accounts::JwtDecoder},
+        router::create_router,
+    },
+};
+use std::{sync::Arc, time::Duration};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
+use tonic::transport::Server;
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 type TransactionManager = FinancialTransactionManager<Manager, DbTransaction>;
 
@@ -82,7 +90,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("starting service");
 
-    let sentry_guard = init_sentry(&config.sentry);
+    let _sentry_guard = init_sentry(&config.sentry);
 
     let metrics = setup_metrics()?;
     let metrics_registry = metrics.registry.clone();
@@ -96,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     tracing::info!("database connected");
 
-    sqlx::migrate!().run(&pool).await?;
+    sqlx::migrate!("../../../").run(&pool).await?;
     tracing::info!("migrations applied");
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));

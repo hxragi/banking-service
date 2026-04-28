@@ -1,0 +1,21 @@
+[package]
+name = "bootstraper"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+domain = { path = "../domain" }
+application = { path = "../application" }
+infrastructure = { path = "../infrastructure" }
+presentation = { path = "../presentation" }
+axum = { version = "0.8.8", default-features = false, features = ["http1", "json", "matched-path", "query", "tokio"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "time", "sync", "signal"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "std"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tonic = { version = "0.14.5", default-features = false, features = ["codegen", "server", "channel", "router"] }
+opentelemetry = { version = "0.31.0", features = ["trace"] }
+anyhow = { version = "1.0.102", default-features = false }
+tracing-opentelemetry = { version = "0.32.1", default-features = false }
+sentry-tracing = { version = "0.48.0", default-features = false }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "migrate"] }
+tracing = { version = "0.1.44", default-features = false }
