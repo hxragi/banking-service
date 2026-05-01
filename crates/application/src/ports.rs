@@ -269,6 +269,59 @@ pub enum OperationError {
     IdempotencyError { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationErrorKind {
+    NotFound,
+    InvalidInput,
+    InsufficientFunds,
+    TierLimitExceeded,
+    TierDowngradeNotAllowed,
+    UniqueConstraintViolation,
+    IdempotencyError,
+    LockTimeout,
+    Deadlock,
+    SerializationFailure,
+    Unavailable,
+    ConnectionError,
+    RepositoryError,
+}
+
+impl OperationError {
+    pub fn kind(&self) -> OperationErrorKind {
+        match self {
+            OperationError::NotFound { .. } => OperationErrorKind::NotFound,
+            OperationError::InvalidInput { .. } => OperationErrorKind::InvalidInput,
+            OperationError::InsufficientFunds => OperationErrorKind::InsufficientFunds,
+            OperationError::TierLimitExceeded => OperationErrorKind::TierLimitExceeded,
+            OperationError::TierDowngradeNotAllowed { .. } => {
+                OperationErrorKind::TierDowngradeNotAllowed
+            }
+            OperationError::UniqueConstraintViolation(..) => {
+                OperationErrorKind::UniqueConstraintViolation
+            }
+
+            OperationError::IdempotencyError { .. } => OperationErrorKind::IdempotencyError,
+            OperationError::LockTimeout => OperationErrorKind::LockTimeout,
+            OperationError::Deadlock => OperationErrorKind::Deadlock,
+            OperationError::SerializationFailure => OperationErrorKind::SerializationFailure,
+            OperationError::Unavailable { .. } => OperationErrorKind::Unavailable,
+            OperationError::ConnectionError(..) => OperationErrorKind::ConnectionError,
+            OperationError::RepositoryError { .. } => OperationErrorKind::RepositoryError,
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.kind(),
+            OperationErrorKind::LockTimeout
+                | OperationErrorKind::Deadlock
+                | OperationErrorKind::SerializationFailure
+                | OperationErrorKind::Unavailable
+                | OperationErrorKind::ConnectionError
+        )
+    }
+}
+
 impl From<AccountRepositoryError> for OperationError {
     fn from(err: AccountRepositoryError) -> Self {
         match err {

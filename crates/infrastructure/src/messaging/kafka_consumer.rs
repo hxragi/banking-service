@@ -1,9 +1,15 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
-
+use crate::messaging::{
+    kafka_external_events::{DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent},
+    kafka_tracing::extract_trace_context,
+};
+use application::{
+    deposit::{DepositInput, DepositPort},
+    ports::{AccountRepository, OperationError},
+    withdraw::{WithdrawInput, WithdrawPort},
+};
 use async_trait::async_trait;
 use base64::Engine;
+use domain::{account_number::AccountNumber, amount::Amount};
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
@@ -12,22 +18,11 @@ use rdkafka::{
     producer::{FutureProducer, Producer},
 };
 use redis::aio::MultiplexedConnection;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex as TokioMutex, mpsc};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-use crate::messaging::kafka_external_events::{
-    DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent,
-};
-use crate::messaging::kafka_tracing::extract_trace_context;
-use application::{
-    deposit::{DepositInput, DepositPort},
-    ports::{AccountRepository, OperationError},
-    withdraw::{WithdrawInput, WithdrawPort},
-};
-use domain::{account_number::AccountNumber, amount::Amount};
 
 const MAX_RETRIES: u32 = 3;
 const DLQ_TOPIC: &str = "bank.transaction.dlq";

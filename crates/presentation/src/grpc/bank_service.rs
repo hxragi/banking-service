@@ -15,7 +15,7 @@ use application::{
     get_account::{GetAccountInput, GetAccountUseCase},
     get_accounts::{GetAccountsInput, GetAccountsUseCase},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
-    ports::{MetricsPort, OperationError},
+    ports::{MetricsPort, OperationError, OperationErrorKind},
     transfer::{TransferInput, TransferPort},
     withdraw::{WithdrawInput, WithdrawPort},
 };
@@ -86,38 +86,30 @@ impl BankGrpcService {
 }
 
 fn map_operation_error(err: OperationError) -> Status {
-    match err {
-        OperationError::NotFound { resource } => {
-            Status::not_found(format!("{} not found", resource))
+    if let OperationError::RepositoryError { operation, reason } = &err {
+        tracing::error!(operation = ?operation, reason = %reason, "repository error");
+    }
+    if let OperationError::ConnectionError(msg) = &err {
+        tracing::error!(message = %msg, "connection error");
+    }
+
+    let msg = err.to_string();
+    match err.kind() {
+        OperationErrorKind::NotFound => Status::not_found(msg),
+        OperationErrorKind::InvalidInput => Status::invalid_argument(msg),
+        OperationErrorKind::InsufficientFunds
+        | OperationErrorKind::TierLimitExceeded
+        | OperationErrorKind::TierDowngradeNotAllowed => Status::failed_precondition(msg),
+        OperationErrorKind::UniqueConstraintViolation | OperationErrorKind::IdempotencyError => {
+            Status::already_exists(msg)
         }
-        OperationError::Unavailable { reason } => Status::unavailable(reason),
-        OperationError::InsufficientFunds => Status::failed_precondition("insufficient funds"),
-        OperationError::InvalidInput { field, reason } => {
-            Status::invalid_argument(format!("invalid {}: {}", field, reason))
+        OperationErrorKind::LockTimeout
+        | OperationErrorKind::Deadlock
+        | OperationErrorKind::SerializationFailure => Status::aborted(msg),
+        OperationErrorKind::Unavailable | OperationErrorKind::ConnectionError => {
+            Status::unavailable(msg)
         }
-        OperationError::RepositoryError { operation, reason } => {
-            tracing::error!(operation = ?operation, reason = %reason, "repository error");
-            Status::internal("internal server error")
-        }
-        OperationError::TierLimitExceeded => Status::failed_precondition("account limit exceeded"),
-        OperationError::TierDowngradeNotAllowed { reason } => {
-            Status::failed_precondition(format!("tier downgrade not allowed: {}", reason))
-        }
-        OperationError::LockTimeout => Status::aborted("lock timeout - please retry"),
-        OperationError::Deadlock => Status::aborted("deadlock detected - please retry"),
-        OperationError::SerializationFailure => {
-            Status::aborted("serialization failure - please retry")
-        }
-        OperationError::UniqueConstraintViolation(msg) => {
-            Status::already_exists(format!("conflict: {}", msg))
-        }
-        OperationError::ConnectionError(msg) => {
-            tracing::error!(message = %msg, "connection error");
-            Status::unavailable("database temporarily unavailable - please retry")
-        }
-        OperationError::IdempotencyError { reason } => {
-            Status::already_exists(format!("idempotency conflict: {}", reason))
-        }
+        OperationErrorKind::RepositoryError => Status::internal("internal server error"),
     }
 }
 

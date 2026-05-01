@@ -8,7 +8,7 @@ use std::str::FromStr;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::database::error::classify;
+use crate::database::error::classify_sqlx;
 
 #[derive(Clone)]
 pub struct SqlxTransactionRepository {
@@ -120,7 +120,7 @@ impl TransactionRepository for SqlxTransactionRepository {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                let context = classify(&e, "find_transactions_paginated");
+                let context = classify_sqlx(&e, "find_transactions_paginated");
                 tracing::error!(err = %context, account_id = %account_id, "failed to find transactions");
                 TransactionRepositoryError::TransactionFailed(context)
             })?;
@@ -177,7 +177,7 @@ impl TransactionRepository for SqlxTransactionRepository {
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {
-            let context = classify(&e, "count_transactions");
+            let context = classify_sqlx(&e, "count_transactions");
             tracing::error!(err = %context, account_id = %account_id, "failed to count transactions");
             TransactionRepositoryError::TransactionFailed(context)
         })?;

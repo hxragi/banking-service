@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
-use crate::database::{error::classify, transaction::DbTransaction};
+use crate::database::{error::classify_sqlx, transaction::DbTransaction};
 use application::ports::{IdempotencyError, IdempotencyTxRepository};
 
 pub struct SqlxIdempotencyRepository {
@@ -105,7 +105,7 @@ impl IdempotencyTxRepository<DbTransaction> for SqlxIdempotencyRepository {
                 }
             }
             Err(e) => {
-                let context = classify(&e, "save_in_tx");
+                let context = classify_sqlx(&e, "save_in_tx");
                 tracing::error!(err = %context, key = %key, "failed to save idempotency response in transaction");
                 Err(IdempotencyError::IdempotencyFailed)
             }

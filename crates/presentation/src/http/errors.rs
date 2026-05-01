@@ -6,7 +6,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::http::extractors::owner_extractor::OwnerExtractionError;
-use application::ports::OperationError;
+use application::ports::{OperationError, OperationErrorKind};
 
 #[derive(Debug)]
 pub enum HttpError {
@@ -18,47 +18,30 @@ pub enum HttpError {
 
 impl From<OperationError> for HttpError {
     fn from(err: OperationError) -> Self {
-        match err {
-            OperationError::NotFound { resource } => {
-                HttpError::InvalidInput(format!("{} not found", resource))
+        if let OperationError::RepositoryError { operation, reason } = &err {
+            tracing::error!(operation = ?operation, reason = %reason, "repository error");
+        }
+        if let OperationError::ConnectionError(msg) = &err {
+            tracing::error!(message = %msg, "connection error");
+        }
+
+        let msg = err.to_string();
+        match err.kind() {
+            OperationErrorKind::NotFound
+            | OperationErrorKind::InvalidInput
+            | OperationErrorKind::InsufficientFunds => HttpError::InvalidInput(msg),
+            OperationErrorKind::TierLimitExceeded
+            | OperationErrorKind::TierDowngradeNotAllowed
+            | OperationErrorKind::UniqueConstraintViolation
+            | OperationErrorKind::IdempotencyError
+            | OperationErrorKind::LockTimeout
+            | OperationErrorKind::Deadlock
+            | OperationErrorKind::SerializationFailure => HttpError::ResourceConflict(msg),
+            OperationErrorKind::Unavailable | OperationErrorKind::ConnectionError => {
+                HttpError::ServiceUnavailable(msg)
             }
-            OperationError::Unavailable { reason } => HttpError::ServiceUnavailable(reason),
-            OperationError::InsufficientFunds => {
-                HttpError::InvalidInput("insufficient funds".into())
-            }
-            OperationError::InvalidInput { field, reason } => {
-                HttpError::InvalidInput(format!("invalid {}: {}", field, reason))
-            }
-            OperationError::RepositoryError { operation, reason } => {
-                tracing::error!(operation = ?operation, reason = %reason, "repository error");
+            OperationErrorKind::RepositoryError => {
                 HttpError::SystemFailure("internal server error".into())
-            }
-            OperationError::TierLimitExceeded => {
-                HttpError::ResourceConflict("account limit exceeded for this tier".into())
-            }
-            OperationError::TierDowngradeNotAllowed { reason } => {
-                HttpError::ResourceConflict(format!("tier downgrade not allowed: {}", reason))
-            }
-            OperationError::LockTimeout => {
-                HttpError::ResourceConflict("lock timeout - please retry".into())
-            }
-            OperationError::Deadlock => {
-                HttpError::ResourceConflict("deadlock detected - please retry".into())
-            }
-            OperationError::SerializationFailure => {
-                HttpError::ResourceConflict("serialization failure - please retry".into())
-            }
-            OperationError::UniqueConstraintViolation(msg) => {
-                HttpError::ResourceConflict(format!("conflict: {}", msg))
-            }
-            OperationError::ConnectionError(msg) => {
-                tracing::error!(message = %msg, "connection error");
-                HttpError::ServiceUnavailable(
-                    "database temporarily unavailable - please retry".into(),
-                )
-            }
-            OperationError::IdempotencyError { reason } => {
-                HttpError::ResourceConflict(format!("idempotency conflict: {}", reason))
             }
         }
     }

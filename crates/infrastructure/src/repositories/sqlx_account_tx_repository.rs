@@ -1,5 +1,5 @@
 use crate::database::{
-    error::{classify, map_sqlx_to_account_error},
+    error::{classify_sqlx, map_sqlx_to_account_error},
     row_mapping::row_to_account,
     transaction::DbTransaction,
 };
@@ -49,7 +49,7 @@ impl AccountTxRepository<DbTransaction> for SqlxAccountTxRepository {
             .execute(tx.as_sqlx())
             .await
             .map_err(|e| {
-                let context = classify(&e, "update_balance");
+                let context = classify_sqlx(&e, "update_balance");
                 tracing::error!(error = %context, "failed to update account balance");
                 map_sqlx_to_account_error(e)
             })?;

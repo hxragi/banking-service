@@ -1,7 +1,7 @@
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
-use crate::database::error::classify;
+use crate::database::error::classify_sqlx;
 use application::ports::{OwnerTierRepository, OwnerTierRepositoryError};
 use domain::org_id::OrgId;
 use domain::owner::Owner;
@@ -96,7 +96,7 @@ impl OwnerTierRepository for SqlxOwnerTierRepository {
                 OffsetDateTime::now_utc(),
             )),
             Err(e) => {
-                let context = classify(&e, "get_or_default");
+                let context = classify_sqlx(&e, "get_or_default");
                 tracing::warn!(err = %context, owner = ?owner, "failed to get owner tier");
                 Err(OwnerTierRepositoryError::OperationFailed {
                     operation: "get_or_default".to_string(),
@@ -136,7 +136,7 @@ impl OwnerTierRepository for SqlxOwnerTierRepository {
         match result {
             Ok(row) => row_to_owner_tier(row),
             Err(e) => {
-                let context = classify(&e, "set_tier");
+                let context = classify_sqlx(&e, "set_tier");
                 tracing::error!(err = %context, owner = ?owner, tier = ?tier, "failed to set owner tier");
                 Err(OwnerTierRepositoryError::OperationFailed {
                     operation: "set_tier".to_string(),
