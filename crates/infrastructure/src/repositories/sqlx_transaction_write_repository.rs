@@ -1,7 +1,7 @@
 use application::ports::{TransactionRepositoryError, TransactionWriteRepository};
 use domain::transaction::Transaction;
 
-use crate::database::{error::map_sqlx_to_transaction_error, transaction::DbTransaction};
+use crate::database::{error::from_sqlx, transaction::DbTransaction};
 
 pub struct SqlxTransactionWriteRepository;
 
@@ -38,8 +38,9 @@ impl TransactionWriteRepository<DbTransaction> for SqlxTransactionWriteRepositor
         .execute(tx.as_sqlx())
         .await
         .map_err(|e| {
-            tracing::error!(error = %e, "failed to create transaction record");
-            map_sqlx_to_transaction_error(e)
+            let err = from_sqlx(&e).with_operation("create transaction");
+            tracing::error!(err = %err, "failed to create transaction record");
+            TransactionRepositoryError::from(err)
         })?;
 
         Ok(())

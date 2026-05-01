@@ -1,8 +1,4 @@
-use crate::database::{
-    error::{classify_sqlx, map_sqlx_to_account_error},
-    row_mapping::row_to_account,
-    transaction::DbTransaction,
-};
+use crate::database::{error::from_sqlx, row_mapping::row_to_account, transaction::DbTransaction};
 use application::ports::{AccountRepositoryError, AccountTxRepository};
 use domain::account::Account;
 use uuid::Uuid;
@@ -23,7 +19,10 @@ impl AccountTxRepository<DbTransaction> for SqlxAccountTxRepository {
         .bind(account_number)
         .fetch_optional(tx.as_sqlx())
         .await
-        .map_err(map_sqlx_to_account_error)?;
+        .map_err(|e| {
+            let err = from_sqlx(&e).with_operation("find by number for update");
+            AccountRepositoryError::from(err)
+        })?;
 
         match row {
             Some(row) => Ok(Some(row_to_account(&row)?)),
@@ -49,9 +48,9 @@ impl AccountTxRepository<DbTransaction> for SqlxAccountTxRepository {
             .execute(tx.as_sqlx())
             .await
             .map_err(|e| {
-                let context = classify_sqlx(&e, "update_balance");
-                tracing::error!(error = %context, "failed to update account balance");
-                map_sqlx_to_account_error(e)
+                let err = from_sqlx(&e).with_operation("update_balance");
+                tracing::error!(error = %err, "failed to update account balance");
+                AccountRepositoryError::from(err)
             })?;
 
         Ok(())
@@ -71,7 +70,10 @@ impl AccountTxRepository<DbTransaction> for SqlxAccountTxRepository {
         .bind(second_number)
         .fetch_all(tx.as_sqlx())
         .await
-        .map_err(map_sqlx_to_account_error)?;
+        .map_err(|e| {
+            let err = from_sqlx(&e).with_operation("lock for update by numbers");
+            AccountRepositoryError::from(err)
+        })?;
 
         rows.iter().map(row_to_account).collect()
     }

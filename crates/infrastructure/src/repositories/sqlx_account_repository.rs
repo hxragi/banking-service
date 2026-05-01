@@ -1,8 +1,7 @@
+use crate::database::{error::from_sqlx, row_mapping::row_to_account};
 use application::ports::{AccountRepository, AccountRepositoryError};
 use domain::{account::Account, account_number::AccountNumber, owner::Owner};
 use sqlx::PgPool;
-
-use crate::database::{error::classify_sqlx, row_mapping::row_to_account};
 
 pub struct SqlxAccountRepository {
     pool: PgPool,
@@ -25,18 +24,15 @@ impl AccountRepository for SqlxAccountRepository {
             SELECT id, number, user_id, org_id, balance, created_at
             FROM accounts
             WHERE number = $1
-            "#
+            "#,
         )
         .bind(number.as_str())
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| {
-            let context = classify_sqlx(&e, "find_by_number");
-            tracing::warn!(err = %context, account_number = %number, "failed to find account by number");
-            AccountRepositoryError::OperationFailed {
-                operation: "find_by_number".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("find by number");
+            tracing::warn!(err = %e, account_number = %number, "failed to find account by number");
+            AccountRepositoryError::from(err)
         })?;
 
         match row {
@@ -67,12 +63,9 @@ impl AccountRepository for SqlxAccountRepository {
             }
         }
         .map_err(|e| {
-            let context = classify_sqlx(&e, "count_by_owner");
-            tracing::warn!(err = %context, owner = ?owner, "failed to count accounts by owner");
-            AccountRepositoryError::OperationFailed {
-                operation: "count_by_owner".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("count_by_owner");
+            tracing::warn!(err = %e, owner = ?owner, "failed to count accounts by owner");
+            AccountRepositoryError::from(err)
         })?;
 
         Ok(count as u64)
@@ -111,22 +104,9 @@ impl AccountRepository for SqlxAccountRepository {
         .execute(&self.pool)
         .await
         .map_err(|e| {
-            let context = classify_sqlx(&e, "create");
-            tracing::error!(err = %context, account_number = %number, "failed to create account");
-
-            if let sqlx::Error::Database(db_err) = &e
-                && (db_err.message().contains("duplicate key")
-                    || db_err.message().contains("unique constraint"))
-            {
-                return AccountRepositoryError::UniqueConstraintViolation(format!(
-                    "account number {} already exists",
-                    number
-                ));
-            }
-            AccountRepositoryError::OperationFailed {
-                operation: "create".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("create");
+            tracing::error!(err = %err, account_number = %number, "failed to create account");
+            AccountRepositoryError::from(err)
         })?;
 
         Ok(())
@@ -160,12 +140,9 @@ impl AccountRepository for SqlxAccountRepository {
             }
         }
         .map_err(|e| {
-            let context = classify_sqlx(&e, "find_by_owner");
-            tracing::error!(err = %context, owner = ?owner, "failed to find accounts by owner");
-            AccountRepositoryError::OperationFailed {
-                operation: "find_by_owner".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("find_by_owner");
+            tracing::error!(err = %err, owner = ?owner, "failed to find accounts by owner");
+            AccountRepositoryError::from(err)
         })?;
 
         let accounts: Vec<Account> = rows
@@ -188,11 +165,8 @@ impl AccountRepository for SqlxAccountRepository {
         let owner = account.owner();
 
         let mut tx = self.pool.begin().await.map_err(|e| {
-            let context = classify_sqlx(&e, "create_within_limit");
-            AccountRepositoryError::OperationFailed {
-                operation: "create_within_limit".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("create_within_limit");
+            AccountRepositoryError::from(err)
         })?;
 
         let (owner_type, owner_id) = match owner {
@@ -206,11 +180,8 @@ impl AccountRepository for SqlxAccountRepository {
             .execute(&mut *tx)
             .await
             .map_err(|e| {
-                let context = classify_sqlx(&e, "create_within_limit");
-                AccountRepositoryError::OperationFailed {
-                    operation: "create_within_limit".to_string(),
-                    reason: context,
-                }
+                let err = from_sqlx(&e).with_operation("create_within_limit");
+                AccountRepositoryError::from(err)
             })?;
 
         let count: i64 = match owner {
@@ -228,11 +199,8 @@ impl AccountRepository for SqlxAccountRepository {
             }
         }
         .map_err(|e| {
-            let context = classify_sqlx(&e, "count_by_owner");
-            AccountRepositoryError::OperationFailed {
-                operation: "count_by_owner".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("count_by_owner");
+            AccountRepositoryError::from(err)
         })?;
 
         if let Some(limit) = limit
@@ -272,28 +240,14 @@ impl AccountRepository for SqlxAccountRepository {
         .execute(&mut *tx)
         .await
         .map_err(|e| {
-            let context = classify_sqlx(&e, "create");
-            if let sqlx::Error::Database(db_err) = &e
-                && (db_err.message().contains("duplicate key")
-                    || db_err.message().contains("unique constraint"))
-            {
-                return AccountRepositoryError::UniqueConstraintViolation(format!(
-                    "account number {} already exists",
-                    number
-                ));
-            }
-            AccountRepositoryError::OperationFailed {
-                operation: "create".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("create");
+            tracing::error!(err = %err, account_number = %number, "failed to create account");
+            AccountRepositoryError::from(err)
         })?;
 
         tx.commit().await.map_err(|e| {
-            let context = classify_sqlx(&e, "create_within_limit");
-            AccountRepositoryError::OperationFailed {
-                operation: "create_within_limit".to_string(),
-                reason: context,
-            }
+            let err = from_sqlx(&e).with_operation("create_within_limit");
+            AccountRepositoryError::from(err)
         })?;
 
         Ok(())

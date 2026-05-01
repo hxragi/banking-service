@@ -8,7 +8,7 @@ use std::str::FromStr;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::database::error::classify_sqlx;
+use crate::database::error::from_sqlx;
 
 #[derive(Clone)]
 pub struct SqlxTransactionRepository {
@@ -120,9 +120,9 @@ impl TransactionRepository for SqlxTransactionRepository {
             .fetch_all(&self.pool)
             .await
             .map_err(|e| {
-                let context = classify_sqlx(&e, "find_transactions_paginated");
-                tracing::error!(err = %context, account_id = %account_id, "failed to find transactions");
-                TransactionRepositoryError::TransactionFailed(context)
+                let err = from_sqlx(&e).with_operation("find_transactions_paginated");
+                tracing::error!(err = %err, account_id = %account_id, "failed to find transactions");
+                TransactionRepositoryError::from(err)
             })?;
 
         let transactions: Vec<TransactionWithAccounts> = rows
@@ -153,7 +153,11 @@ impl TransactionRepository for SqlxTransactionRepository {
                     })
                 },
             )
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<TransactionWithAccounts>, TransactionRepositoryError>>()
+            .map_err(|e| {
+                tracing::error!(err = %e, "failed to convert transaction rows");
+                e
+            })?;
 
         let has_more = (offset + limit) < (total_count as i64);
 
@@ -171,15 +175,15 @@ impl TransactionRepository for SqlxTransactionRepository {
         account_id: Uuid,
     ) -> Result<u64, TransactionRepositoryError> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM transactions WHERE from_account_id = $1 OR to_account_id = $1"
+            "SELECT COUNT(*) FROM transactions WHERE from_account_id = $1 OR to_account_id = $1",
         )
         .bind(account_id)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| {
-            let context = classify_sqlx(&e, "count_transactions");
-            tracing::error!(err = %context, account_id = %account_id, "failed to count transactions");
-            TransactionRepositoryError::TransactionFailed(context)
+            let err = from_sqlx(&e).with_operation("count_transactions");
+            tracing::error!(err = %err, account_id = %account_id, "failed to count transactions");
+            TransactionRepositoryError::from(err)
         })?;
 
         Ok(count as u64)

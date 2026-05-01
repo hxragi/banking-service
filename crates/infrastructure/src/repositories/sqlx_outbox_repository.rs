@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
+use crate::database::error::from_sqlx;
 use crate::database::transaction::DbTransaction;
 use crate::dto::transaction_event_dto::TransactionEventDto;
 use application::ports::TransactionRepositoryError;
@@ -39,7 +40,11 @@ impl OutboxRepository<DbTransaction> for SqlxOutboxRepository {
         .bind(payload)
         .execute(tx.as_sqlx())
         .await
-        .map_err(|e| TransactionRepositoryError::ConnectionError(e.to_string()))?;
+        .map_err(|e| {
+            let err = from_sqlx(&e).with_operation("save_outbox");
+            tracing::error!(err = %err, "failed to save outbox event");
+            TransactionRepositoryError::from(err)
+        })?;
 
         Ok(())
     }
