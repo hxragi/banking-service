@@ -1,30 +1,5 @@
 use std::sync::Arc;
 
-use axum::{
-    Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
-};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-
-use crate::http::extractors::owner_extractor::OwnerExtractor;
-use application::{
-    create_account::{CreateAccountInput, CreateAccountUseCase},
-    deposit::{DepositInput, DepositPort},
-    get_account::{GetAccountInput, GetAccountUseCase},
-    get_accounts::{GetAccountsInput, GetAccountsUseCase},
-    get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
-    transfer::{TransferInput, TransferPort},
-    withdraw::{WithdrawInput, WithdrawPort},
-};
-use domain::account_number::AccountNumber;
-use domain::amount::Amount;
-use domain::owner::Owner;
-use domain::transaction_kind::TransactionKind;
-use domain::user_id::UserId;
-
 use super::super::dto::requests::{
     CreateAccountBody, DepositBody, GetAccountsQuery, GetTransactionsQuery, TransferBody,
     WithdrawBody,
@@ -35,6 +10,31 @@ use super::super::dto::responses::{
 };
 use super::super::errors::HttpError;
 use super::super::mappers::domain_to_http_account;
+use crate::http::extractors::owner_extractor::OwnerExtractor;
+use application::get_account::GetAccountPort;
+use application::get_accounts::GetAccountsPort;
+use application::{
+    create_account::{CreateAccountInput, CreateAccountUseCase},
+    deposit::{DepositInput, DepositPort},
+    get_account::GetAccountInput,
+    get_accounts::GetAccountsInput,
+    get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
+    transfer::{TransferInput, TransferPort},
+    withdraw::{WithdrawInput, WithdrawPort},
+};
+use axum::{
+    Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+};
+use domain::account_number::AccountNumber;
+use domain::amount::Amount;
+use domain::owner::Owner;
+use domain::transaction_kind::TransactionKind;
+use domain::user_id::UserId;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -66,8 +66,8 @@ impl JwtDecoder {
 #[derive(Clone)]
 pub struct AccountHttpHandler {
     create_account_use_case: Arc<CreateAccountUseCase>,
-    get_account_use_case: Arc<GetAccountUseCase>,
-    get_accounts_use_case: Arc<GetAccountsUseCase>,
+    get_account_use_case: Arc<dyn GetAccountPort>,
+    get_accounts_use_case: Arc<dyn GetAccountsPort>,
     deposit_use_case: Arc<dyn DepositPort>,
     withdraw_use_case: Arc<dyn WithdrawPort>,
     transfer_use_case: Arc<dyn TransferPort>,
@@ -79,8 +79,8 @@ impl AccountHttpHandler {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         create_account_use_case: Arc<CreateAccountUseCase>,
-        get_account_use_case: Arc<GetAccountUseCase>,
-        get_accounts_use_case: Arc<GetAccountsUseCase>,
+        get_account_use_case: Arc<dyn GetAccountPort>,
+        get_accounts_use_case: Arc<dyn GetAccountsPort>,
         deposit_use_case: Arc<dyn DepositPort>,
         withdraw_use_case: Arc<dyn WithdrawPort>,
         transfer_use_case: Arc<dyn TransferPort>,

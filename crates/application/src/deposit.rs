@@ -22,17 +22,12 @@ pub trait DepositPort: Send + Sync {
 
 pub struct DepositUseCase {
     transaction_manager: Arc<dyn TransactionManagerPort>,
-    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 impl DepositUseCase {
-    pub fn new(
-        transaction_manager: Arc<dyn TransactionManagerPort>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
+    pub fn new(transaction_manager: Arc<dyn TransactionManagerPort>) -> Self {
         Self {
             transaction_manager,
-            balance_cache,
         }
     }
 }
@@ -73,14 +68,6 @@ impl DepositPort for DepositUseCase {
                         reason: "invalid operation result".to_string(),
                     })?;
 
-                if let Err(e) = self
-                    .balance_cache
-                    .set(account.id(), account.balance().as_u64())
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to set balance in cache")
-                };
-
                 tracing::info!(account_number = %account.number(), new_balance = %account.balance(), "deposit completed");
                 Ok(account)
             }
@@ -89,6 +76,37 @@ impl DepositPort for DepositUseCase {
                 Err(OperationError::from(e))
             }
         }
+    }
+}
+
+pub struct CachingDepositUseCase {
+    inner: Arc<dyn DepositPort>,
+    balance_cache: Arc<dyn BalanceCachePort>,
+}
+
+impl CachingDepositUseCase {
+    pub fn new(inner: Arc<dyn DepositPort>, balance_cache: Arc<dyn BalanceCachePort>) -> Self {
+        Self {
+            inner,
+            balance_cache,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl DepositPort for CachingDepositUseCase {
+    async fn execute(&self, input: DepositInput) -> Result<Account, OperationError> {
+        let account = self.inner.execute(input).await?;
+
+        if let Err(e) = self
+            .balance_cache
+            .set(account.id(), account.balance().as_u64())
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set balance in cache")
+        };
+
+        Ok(account)
     }
 }
 

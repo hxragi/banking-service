@@ -16,7 +16,6 @@ pub struct WithdrawInput {
 
 pub struct WithdrawUseCase {
     transaction_manager: Arc<dyn TransactionManagerPort>,
-    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 #[async_trait::async_trait]
@@ -25,13 +24,9 @@ pub trait WithdrawPort: Send + Sync {
 }
 
 impl WithdrawUseCase {
-    pub fn new(
-        transaction_manager: Arc<dyn TransactionManagerPort>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
+    pub fn new(transaction_manager: Arc<dyn TransactionManagerPort>) -> Self {
         Self {
             transaction_manager,
-            balance_cache,
         }
     }
 }
@@ -72,14 +67,6 @@ impl WithdrawPort for WithdrawUseCase {
                         reason: "invalid operation result".to_string(),
                     })?;
 
-                if let Err(e) = self
-                    .balance_cache
-                    .set(account.id(), account.balance().as_u64())
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to set balance in cache")
-                };
-
                 tracing::info!(account_number = %account.number(), new_balance = %account.balance(), "withdraw completed");
                 Ok(account)
             }
@@ -88,6 +75,37 @@ impl WithdrawPort for WithdrawUseCase {
                 Err(OperationError::from(e))
             }
         }
+    }
+}
+
+pub struct CachingWithdrawUseCase {
+    inner: Arc<dyn WithdrawPort>,
+    balance_cache: Arc<dyn BalanceCachePort>,
+}
+
+impl CachingWithdrawUseCase {
+    pub fn new(inner: Arc<dyn WithdrawPort>, balance_cache: Arc<dyn BalanceCachePort>) -> Self {
+        Self {
+            inner,
+            balance_cache,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl WithdrawPort for CachingWithdrawUseCase {
+    async fn execute(&self, input: WithdrawInput) -> Result<Account, OperationError> {
+        let account = self.inner.execute(input).await?;
+
+        if let Err(e) = self
+            .balance_cache
+            .set(account.id(), account.balance().as_u64())
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set balance in cache")
+        };
+
+        Ok(account)
     }
 }
 

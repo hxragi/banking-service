@@ -9,18 +9,11 @@ pub struct GetAccountInput {
 
 pub struct GetAccountUseCase {
     account_repository: Arc<dyn AccountRepository + Send + Sync>,
-    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 impl GetAccountUseCase {
-    pub fn new(
-        account_repository: Arc<dyn AccountRepository + Send + Sync>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
-        Self {
-            account_repository,
-            balance_cache,
-        }
+    pub fn new(account_repository: Arc<dyn AccountRepository + Send + Sync>) -> Self {
+        Self { account_repository }
     }
 
     pub async fn execute(&self, input: GetAccountInput) -> Result<Account, OperationError> {
@@ -33,6 +26,41 @@ impl GetAccountUseCase {
             .ok_or(OperationError::NotFound {
                 resource: "account".to_string(),
             })?;
+
+        Ok(account)
+    }
+}
+
+#[async_trait::async_trait]
+pub trait GetAccountPort: Send + Sync {
+    async fn execute(&self, input: GetAccountInput) -> Result<Account, OperationError>;
+}
+
+#[async_trait::async_trait]
+impl GetAccountPort for GetAccountUseCase {
+    async fn execute(&self, input: GetAccountInput) -> Result<Account, OperationError> {
+        self.execute(input).await
+    }
+}
+
+pub struct CachingGetAccountUseCase {
+    inner: Arc<dyn GetAccountPort>,
+    balance_cache: Arc<dyn BalanceCachePort>,
+}
+
+impl CachingGetAccountUseCase {
+    pub fn new(inner: Arc<dyn GetAccountPort>, balance_cache: Arc<dyn BalanceCachePort>) -> Self {
+        Self {
+            inner,
+            balance_cache,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GetAccountPort for CachingGetAccountUseCase {
+    async fn execute(&self, input: GetAccountInput) -> Result<Account, OperationError> {
+        let account = self.inner.execute(input).await?;
 
         if let Err(e) = self
             .balance_cache

@@ -1,15 +1,15 @@
 use application::{
     change_tier::ChangeTierUseCase,
     create_account::CreateAccountUseCase,
-    deposit::DepositUseCase,
+    deposit::{CachingDepositUseCase, DepositPort, DepositUseCase},
     external_event_processor::ExternalEventProcessor,
-    get_account::GetAccountUseCase,
-    get_accounts::GetAccountsUseCase,
+    get_account::{CachingGetAccountUseCase, GetAccountPort, GetAccountUseCase},
+    get_accounts::{CachingGetAccountsUseCase, GetAccountsPort, GetAccountsUseCase},
     get_transactions::GetTransactionsUseCase,
     ports::{BalanceCachePort, EventPublisher, MetricsPort},
     transaction_manager::{FinancialTransactionManager, RetryConfig},
-    transfer::TransferUseCase,
-    withdraw::WithdrawUseCase,
+    transfer::{CachingTransferUseCase, TransferPort, TransferUseCase},
+    withdraw::{CachingWithdrawUseCase, WithdrawPort, WithdrawUseCase},
 };
 use axum::{Router, routing::get};
 use infrastructure::{
@@ -179,14 +179,33 @@ async fn main() -> anyhow::Result<()> {
 
     let balance_cache_arc: Arc<dyn BalanceCachePort> = Arc::new(balance_cache.clone());
 
-    let get_account_use_case = Arc::new(GetAccountUseCase::new(
-        account_repo.clone(),
+    let get_account_uc = Arc::new(GetAccountUseCase::new(account_repo.clone()));
+    let get_accounts_uc = Arc::new(GetAccountsUseCase::new(account_repo.clone()));
+    let deposit_uc = Arc::new(DepositUseCase::new(transaction_manager.clone()));
+    let withdraw_uc = Arc::new(WithdrawUseCase::new(transaction_manager.clone()));
+    let transfer_uc = Arc::new(TransferUseCase::new(transaction_manager.clone()));
+
+    let get_account_use_case: Arc<dyn GetAccountPort> = Arc::new(CachingGetAccountUseCase::new(
+        get_account_uc,
         balance_cache_arc.clone(),
     ));
-    let get_accounts_use_case = Arc::new(GetAccountsUseCase::new(
-        account_repo.clone(),
+    let get_accounts_use_case: Arc<dyn GetAccountsPort> = Arc::new(CachingGetAccountsUseCase::new(
+        get_accounts_uc,
         balance_cache_arc.clone(),
     ));
+    let deposit_use_case: Arc<dyn DepositPort> = Arc::new(CachingDepositUseCase::new(
+        deposit_uc,
+        balance_cache_arc.clone(),
+    ));
+    let withdraw_use_case: Arc<dyn WithdrawPort> = Arc::new(CachingWithdrawUseCase::new(
+        withdraw_uc,
+        balance_cache_arc.clone(),
+    ));
+    let transfer_use_case: Arc<dyn TransferPort> = Arc::new(CachingTransferUseCase::new(
+        transfer_uc,
+        balance_cache_arc.clone(),
+    ));
+
     let get_transactions_use_case = Arc::new(GetTransactionsUseCase::new(
         account_repo.clone(),
         transaction_repository.clone(),
@@ -196,18 +215,9 @@ async fn main() -> anyhow::Result<()> {
         create_account_use_case.clone(),
         get_account_use_case.clone(),
         get_accounts_use_case.clone(),
-        Arc::new(DepositUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
-        Arc::new(WithdrawUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
-        Arc::new(TransferUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
+        deposit_use_case.clone(),
+        withdraw_use_case.clone(),
+        transfer_use_case.clone(),
         get_transactions_use_case.clone(),
         Arc::new(ChangeTierUseCase::new(
             account_repo.clone(),
@@ -235,18 +245,9 @@ async fn main() -> anyhow::Result<()> {
         create_account_use_case,
         get_account_use_case.clone(),
         get_accounts_use_case.clone(),
-        Arc::new(DepositUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
-        Arc::new(WithdrawUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
-        Arc::new(TransferUseCase::new(
-            transaction_manager.clone(),
-            balance_cache_arc.clone(),
-        )),
+        deposit_use_case.clone(),
+        withdraw_use_case.clone(),
+        transfer_use_case.clone(),
         get_transactions_use_case.clone(),
         jwt_decoder,
     ));
@@ -277,15 +278,6 @@ async fn main() -> anyhow::Result<()> {
         session_timeout_ms: 10000,
         auto_offset_reset: "earliest".to_string(),
     };
-
-    let deposit_use_case = Arc::new(DepositUseCase::new(
-        transaction_manager.clone(),
-        balance_cache_arc.clone(),
-    ));
-    let withdraw_use_case = Arc::new(WithdrawUseCase::new(
-        transaction_manager.clone(),
-        balance_cache_arc.clone(),
-    ));
 
     let event_processor = Arc::new(ExternalEventProcessor::new(
         deposit_use_case,

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use domain::{account_number::AccountNumber, amount::Amount, transaction::Transaction};
+use domain::{
+    account::Account, account_number::AccountNumber, amount::Amount, transaction::Transaction,
+};
 
 use crate::{
     ports::{BalanceCachePort, OperationError},
@@ -19,6 +21,8 @@ pub struct TransferInput {
 
 pub struct TransferOutput {
     pub transaction: Transaction,
+    pub from_account: Account,
+    pub to_account: Account,
 }
 
 #[async_trait::async_trait]
@@ -28,17 +32,12 @@ pub trait TransferPort: Send + Sync {
 
 pub struct TransferUseCase {
     transaction_manager: Arc<dyn TransactionManagerPort>,
-    balance_cache: Arc<dyn BalanceCachePort>,
 }
 
 impl TransferUseCase {
-    pub fn new(
-        transaction_manager: Arc<dyn TransactionManagerPort>,
-        balance_cache: Arc<dyn BalanceCachePort>,
-    ) -> Self {
+    pub fn new(transaction_manager: Arc<dyn TransactionManagerPort>) -> Self {
         Self {
             transaction_manager,
-            balance_cache,
         }
     }
 }
@@ -81,26 +80,6 @@ impl TransferPort for TransferUseCase {
                     }
                 })?;
 
-                if let Err(e) = self
-                    .balance_cache
-                    .set(
-                        transfer_result.from_account.id(),
-                        transfer_result.from_account.balance().as_u64(),
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to set balance in cache")
-                };
-                if let Err(e) = self
-                    .balance_cache
-                    .set(
-                        transfer_result.to_account.id(),
-                        transfer_result.from_account.balance().as_u64(),
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "failed to set balance in cache")
-                };
                 tracing::info!(
                     from = %transfer_result.from_account.number(),
                     to = %transfer_result.to_account.number(),
@@ -110,6 +89,8 @@ impl TransferPort for TransferUseCase {
                 );
                 Ok(TransferOutput {
                     transaction: output.transaction().clone(),
+                    from_account: transfer_result.from_account,
+                    to_account: transfer_result.to_account,
                 })
             }
             Err(e) => {
@@ -117,6 +98,47 @@ impl TransferPort for TransferUseCase {
                 Err(OperationError::from(e))
             }
         }
+    }
+}
+
+pub struct CachingTransferUseCase {
+    inner: Arc<dyn TransferPort>,
+    balance_cache: Arc<dyn BalanceCachePort>,
+}
+
+impl CachingTransferUseCase {
+    pub fn new(inner: Arc<dyn TransferPort>, balance_cache: Arc<dyn BalanceCachePort>) -> Self {
+        Self {
+            inner,
+            balance_cache,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl TransferPort for CachingTransferUseCase {
+    async fn execute(&self, input: TransferInput) -> Result<TransferOutput, OperationError> {
+        let output = self.inner.execute(input).await?;
+
+        if let Err(e) = self
+            .balance_cache
+            .set(
+                output.from_account.id(),
+                output.from_account.balance().as_u64(),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set balance in cache")
+        };
+        if let Err(e) = self
+            .balance_cache
+            .set(output.to_account.id(), output.to_account.balance().as_u64())
+            .await
+        {
+            tracing::warn!(error = %e, "failed to set balance in cache")
+        };
+
+        Ok(output)
     }
 }
 

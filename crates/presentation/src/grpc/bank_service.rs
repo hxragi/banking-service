@@ -12,8 +12,8 @@ use application::{
     change_tier::{ChangeTierInput, ChangeTierUseCase},
     create_account::{CreateAccountInput, CreateAccountUseCase},
     deposit::{DepositInput, DepositPort},
-    get_account::{GetAccountInput, GetAccountUseCase},
-    get_accounts::{GetAccountsInput, GetAccountsUseCase},
+    get_account::{GetAccountInput, GetAccountPort},
+    get_accounts::{GetAccountsInput, GetAccountsPort},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
     ports::{MetricsPort, OperationError, OperationErrorKind},
     transfer::{TransferInput, TransferPort},
@@ -48,8 +48,8 @@ fn map_extraction_error(err: OwnerExtractionError) -> Status {
 #[derive(Clone)]
 pub struct BankGrpcService {
     create_account_use_case: Arc<CreateAccountUseCase>,
-    get_account_use_case: Arc<GetAccountUseCase>,
-    get_accounts_use_case: Arc<GetAccountsUseCase>,
+    get_account_use_case: Arc<dyn GetAccountPort>,
+    get_accounts_use_case: Arc<dyn GetAccountsPort>,
     deposit_use_case: Arc<dyn DepositPort>,
     withdraw_use_case: Arc<dyn WithdrawPort>,
     transfer_use_case: Arc<dyn TransferPort>,
@@ -62,8 +62,8 @@ impl BankGrpcService {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         create_account_use_case: Arc<CreateAccountUseCase>,
-        get_account_use_case: Arc<GetAccountUseCase>,
-        get_accounts_use_case: Arc<GetAccountsUseCase>,
+        get_account_use_case: Arc<dyn GetAccountPort>,
+        get_accounts_use_case: Arc<dyn GetAccountsPort>,
         deposit_use_case: Arc<dyn DepositPort>,
         withdraw_use_case: Arc<dyn WithdrawPort>,
         transfer_use_case: Arc<dyn TransferPort>,
