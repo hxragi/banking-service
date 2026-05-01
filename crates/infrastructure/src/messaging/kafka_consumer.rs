@@ -2,14 +2,12 @@ use crate::messaging::{
     kafka_external_events::{DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent},
     kafka_tracing::extract_trace_context,
 };
-use application::{
-    deposit::{DepositInput, DepositPort},
-    ports::{AccountRepository, OperationError},
-    withdraw::{WithdrawInput, WithdrawPort},
+use application::external_event_processor::{
+    ExternalEventError, ExternalEventProcessor, ProcessDonateTopupInput, ProcessGovFineInput,
+    ProcessMarketOrderInput,
 };
 use async_trait::async_trait;
 use base64::Engine;
-use domain::{account_number::AccountNumber, amount::Amount};
 use opentelemetry::trace::TraceContextExt;
 use rdkafka::{
     ClientConfig, Message,
@@ -20,7 +18,7 @@ use rdkafka::{
 use redis::aio::MultiplexedConnection;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::sync::{Mutex as TokioMutex, mpsc};
+use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -44,7 +42,7 @@ impl RetryTrackerError {
 #[derive(Clone)]
 pub struct RetryTracker {
     redis: MultiplexedConnection,
-    memory: Arc<TokioMutex<HashMap<String, u32>>>,
+    memory: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl RetryTracker {
@@ -53,7 +51,7 @@ impl RetryTracker {
         let redis = client.get_multiplexed_async_connection().await?;
         Ok(Self {
             redis,
-            memory: Arc::new(TokioMutex::new(HashMap::new())),
+            memory: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -264,77 +262,13 @@ pub trait ExternalEventHandler: Send + Sync {
     async fn handle_donate_topup(&self, event: DonateTopupEvent) -> Result<(), ExternalEventError>;
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ExternalEventError {
-    #[error("account not found for user {user_id}")]
-    AccountNotFound { user_id: String },
-    #[error("insufficient funds for user {user_id}")]
-    InsufficientFunds { user_id: String },
-    #[error("invalid amount: {0}")]
-    InvalidAmount(String),
-    #[error("invalid account number format: {0}")]
-    InvalidAccountFormat(String),
-    #[error("account temporarily unavailable")]
-    AccountUnavailable,
-    #[error("operation failed: {0}")]
-    OperationFailed(String),
-}
-
 pub struct ExternalEventHandlerImpl {
-    deposit_use_case: Arc<dyn DepositPort>,
-    withdraw_use_case: Arc<dyn WithdrawPort>,
-    account_repo: Arc<dyn AccountRepository + Send + Sync>,
+    processor: Arc<ExternalEventProcessor>,
 }
 
 impl ExternalEventHandlerImpl {
-    pub fn new(
-        deposit_use_case: Arc<dyn DepositPort>,
-        withdraw_use_case: Arc<dyn WithdrawPort>,
-        account_repo: Arc<dyn AccountRepository + Send + Sync>,
-    ) -> Self {
-        Self {
-            deposit_use_case,
-            withdraw_use_case,
-            account_repo,
-        }
-    }
-
-    async fn find_account_by_user_id(
-        &self,
-        user_id: &str,
-    ) -> Result<AccountNumber, ExternalEventError> {
-        use domain::{owner::Owner, user_id::UserId};
-
-        let owner_id = UserId::new(user_id).map_err(|_| ExternalEventError::AccountNotFound {
-            user_id: user_id.to_string(),
-        })?;
-        let owner = Owner::User(owner_id);
-
-        let accounts = self.account_repo.find_by_owner(&owner).await.map_err(|e| {
-            tracing::error!(error = ?e, user_id = %user_id, "Failed to query accounts by owner");
-            ExternalEventError::AccountUnavailable
-        })?;
-
-        accounts
-            .into_iter()
-            .next()
-            .map(|account| account.number().clone())
-            .ok_or_else(|| ExternalEventError::AccountNotFound {
-                user_id: user_id.to_string(),
-            })
-    }
-
-    async fn resolve_account_number(
-        &self,
-        explicit_account: Option<&str>,
-        user_id: &str,
-    ) -> Result<AccountNumber, ExternalEventError> {
-        if let Some(account_number) = explicit_account {
-            AccountNumber::new(account_number)
-                .map_err(|_| ExternalEventError::InvalidAccountFormat(account_number.to_string()))
-        } else {
-            self.find_account_by_user_id(user_id).await
-        }
+    pub fn new(processor: Arc<ExternalEventProcessor>) -> Self {
+        Self { processor }
     }
 }
 
@@ -350,40 +284,14 @@ impl ExternalEventHandler for ExternalEventHandlerImpl {
     ) -> Result<(), ExternalEventError> {
         tracing::info!("processing gov.fine.created event");
 
-        let account_number = self
-            .resolve_account_number(event.account_number.as_deref(), &event.user_id)
-            .await?;
-
-        let amount = Amount::new(event.amount)
-            .map_err(|_| ExternalEventError::InvalidAmount(event.amount.to_string()))?;
-
-        let idempotency_key = format!("gov.fine:{}", event.fine_id);
-
-        let input = WithdrawInput {
-            account_number,
-            amount,
-            idempotency_key: Some(idempotency_key),
-        };
-
-        match self.withdraw_use_case.execute(input).await {
-            Ok(account) => {
-                tracing::info!(
-                    fine_id = %event.fine_id,
-                    account_number = %account.number(),
-                    new_balance = %account.balance(),
-                    "fine payment processed successfully"
-                );
-                Ok(())
-            }
-            Err(OperationError::NotFound { .. }) => Err(ExternalEventError::AccountNotFound {
+        self.processor
+            .process_gov_fine(ProcessGovFineInput {
+                fine_id: event.fine_id,
                 user_id: event.user_id,
-            }),
-            Err(OperationError::InsufficientFunds) => Err(ExternalEventError::InsufficientFunds {
-                user_id: event.user_id,
-            }),
-            Err(OperationError::Unavailable { .. }) => Err(ExternalEventError::AccountUnavailable),
-            Err(e) => Err(ExternalEventError::OperationFailed(e.to_string())),
-        }
+                account_number: event.account_number,
+                amount: event.amount,
+            })
+            .await
     }
 
     #[tracing::instrument(
@@ -396,41 +304,15 @@ impl ExternalEventHandler for ExternalEventHandlerImpl {
     ) -> Result<(), ExternalEventError> {
         tracing::info!("processing market.order.paid event");
 
-        let account_number = self
-            .resolve_account_number(event.buyer_account_number.as_deref(), &event.buyer_id)
-            .await?;
-
-        let amount = Amount::new(event.total_amount)
-            .map_err(|_| ExternalEventError::InvalidAmount(event.total_amount.to_string()))?;
-
-        let idempotency_key = format!("market.order:{}", event.order_id);
-
-        let input = WithdrawInput {
-            account_number,
-            amount,
-            idempotency_key: Some(idempotency_key),
-        };
-
-        match self.withdraw_use_case.execute(input).await {
-            Ok(account) => {
-                tracing::info!(
-                    order_id = %event.order_id,
-                    buyer_account = %account.number(),
-                    new_balance = %account.balance(),
-                    seller_id = %event.seller_id,
-                    "market order payment processed successfully"
-                );
-                Ok(())
-            }
-            Err(OperationError::NotFound { .. }) => Err(ExternalEventError::AccountNotFound {
-                user_id: event.buyer_id,
-            }),
-            Err(OperationError::InsufficientFunds) => Err(ExternalEventError::InsufficientFunds {
-                user_id: event.buyer_id,
-            }),
-            Err(OperationError::Unavailable { .. }) => Err(ExternalEventError::AccountUnavailable),
-            Err(e) => Err(ExternalEventError::OperationFailed(e.to_string())),
-        }
+        self.processor
+            .process_market_order(ProcessMarketOrderInput {
+                order_id: event.order_id,
+                buyer_id: event.buyer_id,
+                buyer_account_number: event.buyer_account_number,
+                total_amount: event.total_amount,
+                seller_id: event.seller_id,
+            })
+            .await
     }
 
     #[tracing::instrument(
@@ -440,42 +322,15 @@ impl ExternalEventHandler for ExternalEventHandlerImpl {
     async fn handle_donate_topup(&self, event: DonateTopupEvent) -> Result<(), ExternalEventError> {
         tracing::info!("processing donate.topup event");
 
-        let account_number = self
-            .resolve_account_number(
-                event.recipient_account_number.as_deref(),
-                &event.recipient_id,
-            )
-            .await?;
-
-        let amount = Amount::new(event.amount)
-            .map_err(|_| ExternalEventError::InvalidAmount(event.amount.to_string()))?;
-
-        let idempotency_key = format!("donate:{}", event.donation_id);
-
-        let input = DepositInput {
-            account_number,
-            amount,
-            idempotency_key: Some(idempotency_key),
-        };
-
-        match self.deposit_use_case.execute(input).await {
-            Ok(account) => {
-                tracing::info!(
-                    donation_id = %event.donation_id,
-                    recipient_account = %account.number(),
-                    new_balance = %account.balance(),
-                    amount = %event.amount,
-                    anonymous = %event.is_anonymous,
-                    "donation topup processed successfully"
-                );
-                Ok(())
-            }
-            Err(OperationError::NotFound { .. }) => Err(ExternalEventError::AccountNotFound {
-                user_id: event.recipient_id,
-            }),
-            Err(OperationError::Unavailable { .. }) => Err(ExternalEventError::AccountUnavailable),
-            Err(e) => Err(ExternalEventError::OperationFailed(e.to_string())),
-        }
+        self.processor
+            .process_donate_topup(ProcessDonateTopupInput {
+                donation_id: event.donation_id,
+                recipient_id: event.recipient_id,
+                recipient_account_number: event.recipient_account_number,
+                amount: event.amount,
+                is_anonymous: event.is_anonymous,
+            })
+            .await
     }
 }
 

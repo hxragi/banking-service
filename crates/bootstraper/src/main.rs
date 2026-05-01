@@ -2,6 +2,7 @@ use application::{
     change_tier::ChangeTierUseCase,
     create_account::CreateAccountUseCase,
     deposit::DepositUseCase,
+    external_event_processor::ExternalEventProcessor,
     get_account::GetAccountUseCase,
     get_accounts::GetAccountsUseCase,
     get_transactions::GetTransactionsUseCase,
@@ -286,11 +287,13 @@ async fn main() -> anyhow::Result<()> {
         balance_cache_arc.clone(),
     ));
 
-    let event_handler = Arc::new(ExternalEventHandlerImpl::new(
+    let event_processor = Arc::new(ExternalEventProcessor::new(
         deposit_use_case,
         withdraw_use_case,
         account_repo.clone(),
     ));
+
+    let event_handler = Arc::new(ExternalEventHandlerImpl::new(event_processor));
 
     let (consumer_shutdown_tx, consumer_shutdown_rx) = mpsc::channel(1);
 
