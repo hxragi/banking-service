@@ -11,7 +11,6 @@ use application::{
     transfer::{CachingTransferUseCase, TransferPort, TransferUseCase},
     withdraw::{CachingWithdrawUseCase, WithdrawPort, WithdrawUseCase},
 };
-use axum::{Router, routing::get};
 use infrastructure::{
     database::{
         pool::create_with_config, transaction::DbTransaction, transaction_manager::Manager,
@@ -31,7 +30,7 @@ use infrastructure::{
         kafka_event_publisher::KafkaEventPublisher,
     },
     observability::{
-        health::{HealthChecker, health_check, readiness_check},
+        health::HealthChecker,
         metrics::{create_metrics_router, setup_metrics},
         sentry::init_sentry,
         signal::shutdown_signal,
@@ -252,12 +251,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_decoder,
     ));
 
-    let http_app = create_router(http_handler).merge(
-        Router::new()
-            .route("/health", get(health_check))
-            .route("/ready", get(readiness_check))
-            .with_state(health_checker.clone()),
-    );
+    let http_app = create_router(http_handler, health_checker);
 
     let http_addr: std::net::SocketAddr =
         format!("{}:{}", config.server.http_host, config.server.http_port).parse()?;

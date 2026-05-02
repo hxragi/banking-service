@@ -30,6 +30,7 @@ dependencies = [
  "async-trait",
  "domain",
  "rand 0.10.1",
+ "serde",
  "thiserror",
  "time",
  "tokio",

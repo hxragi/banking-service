@@ -2,6 +2,7 @@ use domain::{
     account::Account, account_number::AccountNumber, owner::Owner, owner_tier::OwnerTier,
     tier::Tier, transaction_event::TransactionEvent,
 };
+use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -405,4 +406,45 @@ impl From<OwnerTierRepositoryError> for OperationError {
             }
         }
     }
+}
+
+#[derive(Serialize)]
+pub struct HealthStatus {
+    pub healthy: bool,
+    pub uptime_secs: u64,
+    pub database: DatabaseStatus,
+    pub tables: TablesStatus,
+    pub migrations: MigrationStatus,
+}
+
+#[derive(Serialize)]
+pub struct DatabaseStatus {
+    pub healthy: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct TablesStatus {
+    pub healthy: bool,
+    pub accounts: bool,
+    pub transactions: bool,
+    pub idempotency_keys: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct MigrationStatus {
+    pub applied: bool,
+    pub message: String,
+}
+
+#[derive(Serialize)]
+pub struct ReadinessStatus {
+    pub status: &'static str,
+}
+
+#[async_trait::async_trait]
+pub trait HealthPort: Send + Sync {
+    async fn health(&self) -> HealthStatus;
+    async fn readiness(&self) -> ReadinessStatus;
 }

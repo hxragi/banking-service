@@ -1,8 +1,10 @@
-use axum::{Json, http::StatusCode, response::IntoResponse};
-use serde::Serialize;
-use sqlx::PgPool;
-use std::sync::Arc;
 use std::time::Instant;
+
+use sqlx::PgPool;
+
+use application::ports::{
+    DatabaseStatus, HealthPort, HealthStatus, MigrationStatus, ReadinessStatus, TablesStatus,
+};
 
 #[derive(Clone)]
 pub struct HealthChecker {
@@ -15,29 +17,6 @@ impl HealthChecker {
         Self {
             pool,
             start_time: Instant::now(),
-        }
-    }
-
-    pub async fn check(&self) -> HealthStatus {
-        let db_status = self.check_database().await;
-        let tables_status = self.check_tables().await;
-        let uptime_secs = self.start_time.elapsed().as_secs();
-
-        let overall_healthy = db_status.healthy && tables_status.healthy;
-
-        HealthStatus {
-            healthy: overall_healthy,
-            uptime_secs,
-            database: db_status,
-            tables: tables_status,
-            migrations: MigrationStatus {
-                applied: overall_healthy,
-                message: if overall_healthy {
-                    "migrations applied".to_string()
-                } else {
-                    "migration check failed".to_string()
-                },
-            },
         }
     }
 
@@ -94,56 +73,32 @@ impl HealthChecker {
     }
 }
 
-#[derive(Serialize)]
-pub struct HealthStatus {
-    pub healthy: bool,
-    pub uptime_secs: u64,
-    pub database: DatabaseStatus,
-    pub tables: TablesStatus,
-    pub migrations: MigrationStatus,
-}
+#[async_trait::async_trait]
+impl HealthPort for HealthChecker {
+    async fn health(&self) -> HealthStatus {
+        let db_status = self.check_database().await;
+        let tables_status = self.check_tables().await;
+        let uptime_secs = self.start_time.elapsed().as_secs();
 
-#[derive(Serialize)]
-pub struct DatabaseStatus {
-    pub healthy: bool,
-    pub message: String,
-}
+        let overall_healthy = db_status.healthy && tables_status.healthy;
 
-#[derive(Serialize)]
-pub struct TablesStatus {
-    pub healthy: bool,
-    pub accounts: bool,
-    pub transactions: bool,
-    pub idempotency_keys: bool,
-    pub message: String,
-}
-
-#[derive(Serialize)]
-pub struct MigrationStatus {
-    pub applied: bool,
-    pub message: String,
-}
-
-impl IntoResponse for HealthStatus {
-    fn into_response(self) -> axum::response::Response {
-        let status = if self.healthy {
-            StatusCode::OK
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-
-        (status, Json(self)).into_response()
+        HealthStatus {
+            healthy: overall_healthy,
+            uptime_secs,
+            database: db_status,
+            tables: tables_status,
+            migrations: MigrationStatus {
+                applied: overall_healthy,
+                message: if overall_healthy {
+                    "migrations applied".to_string()
+                } else {
+                    "migration check failed".to_string()
+                },
+            },
+        }
     }
-}
 
-pub async fn health_check(
-    axum::extract::State(checker): axum::extract::State<Arc<HealthChecker>>,
-) -> HealthStatus {
-    checker.check().await
-}
-
-pub async fn readiness_check() -> Json<serde_json::Value> {
-    Json(serde_json::json!({
-        "status": "ready"
-    }))
+    async fn readiness(&self) -> ReadinessStatus {
+        ReadinessStatus { status: "ready" }
+    }
 }
