@@ -105,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     tracing::info!("database connected");
 
-    sqlx::migrate!("../../../").run(&pool).await?;
+    sqlx::migrate!("../../migrations").run(&pool).await?;
     tracing::info!("migrations applied");
 
     let account_repo = Arc::new(SqlxAccountRepository::new(pool.clone()));
@@ -238,7 +238,7 @@ async fn main() -> anyhow::Result<()> {
 
     let health_checker = Arc::new(HealthChecker::new(pool.clone()));
 
-    let jwt_decoder = Arc::new(JwtDecoder::new(config.jwt_config.as_bytes()));
+    let jwt_decoder = Arc::new(JwtDecoder::new(config.jwt_secret.as_bytes()));
 
     let http_handler = Arc::new(AccountHttpHandler::new(
         create_account_use_case,

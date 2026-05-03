@@ -118,6 +118,8 @@ services:
         condition: service_healthy
       redpanda:
         condition: service_healthy
+      kafka-topic-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
       interval: 10s

@@ -11,15 +11,29 @@ RUN apt-get update && apt-get install -y \
 
 COPY Cargo.toml Cargo.lock ./
 
-COPY proto ./proto
-COPY build.rs ./
+COPY crates/domain/Cargo.toml ./crates/domain/
+COPY crates/application/Cargo.toml ./crates/application/
+COPY crates/infrastructure/Cargo.toml ./crates/infrastructure/
+COPY crates/presentation/Cargo.toml ./crates/presentation/
+COPY crates/bootstraper/Cargo.toml ./crates/bootstraper/
 
-COPY src ./src
+RUN mkdir -p crates/domain/src && \
+    mkdir -p crates/application/src && \
+    mkdir -p crates/infrastructure/src && \
+    mkdir -p crates/presentation/src && \
+    mkdir -p crates/bootstraper/src
+
+COPY proto ./proto
+COPY crates/presentation/build.rs ./crates/presentation/build.rs
+
+RUN cargo build --release 2>/dev/null || true
+
+COPY crates ./crates
 COPY migrations ./migrations
 
 RUN cargo build --release
 
-RUN strip /app/target/release/bank-service
+RUN strip /app/target/release/bootstraper
 
 FROM debian:bookworm-slim AS runtime
 
@@ -34,8 +48,7 @@ RUN apt-get update && apt-get install -y \
 
 RUN groupadd -r bank && useradd -r -g bank bank
 
-COPY --from=builder /app/target/release/bank-service /usr/local/bin/bank-service
-
+COPY --from=builder /app/target/release/bootstraper /usr/local/bin/bank-service
 COPY --from=builder /app/migrations ./migrations
 
 RUN chown -R bank:bank /app
