@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::ports::{
     AccountRepository, AccountRepositoryError, AccountTxRepository, EventPublisher,
     IdempotencyError, IdempotencyTxRepository, MetricsPort, OperationError, Transaction as TxTrait,
@@ -7,7 +9,7 @@ use domain::{
     account::Account, account_number::AccountNumber, amount::Amount, balance::Balance,
     transaction::Transaction, transaction_event::TransactionEvent,
 };
-use std::sync::Arc;
+
 use thiserror::Error;
 use uuid::Uuid;
 

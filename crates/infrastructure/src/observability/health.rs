@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use sqlx::PgPool;
-
 use application::ports::{
     DatabaseStatus, HealthPort, HealthStatus, MigrationStatus, ReadinessStatus, TablesStatus,
 };
+
+use sqlx::PgPool;
 
 #[derive(Clone)]
 pub struct HealthChecker {

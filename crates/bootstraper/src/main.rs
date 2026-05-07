@@ -1,3 +1,5 @@
+use std::{sync::Arc, time::Duration};
+
 use application::{
     change_tier::ChangeTierUseCase,
     create_account::CreateAccountUseCase,
@@ -56,7 +58,7 @@ use presentation::{
         router::create_router,
     },
 };
-use std::{sync::Arc, time::Duration};
+
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tonic::transport::Server;

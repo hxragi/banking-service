@@ -1,6 +1,7 @@
 use application::ports::{AccountNumberGenerator, AccountNumberGeneratorError};
-use async_trait::async_trait;
 use domain::account_number::AccountNumber;
+
+use async_trait::async_trait;
 use sqlx::PgPool;
 use thiserror::Error;
 

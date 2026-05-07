@@ -1,5 +1,11 @@
 use std::sync::Arc;
 
+use super::handlers::accounts::{
+    AccountHttpHandler, create_account, deposit, get_account, get_accounts, get_transactions,
+    transfer, withdraw,
+};
+use application::ports::HealthPort;
+
 use axum::{
     Json, Router,
     extract::State,
@@ -10,37 +16,20 @@ use axum::{
 use tower_http::trace::TraceLayer;
 use tracing::info_span;
 
-use application::ports::HealthPort;
-
-use super::handlers::accounts::AccountHttpHandler;
-
 pub fn create_router<H>(handler: Arc<AccountHttpHandler>, health: Arc<H>) -> Router<()>
 where
     H: HealthPort + 'static,
 {
     let account_routes = Router::new()
-        .route(
-            "/accounts",
-            post(super::handlers::accounts::create_account)
-                .get(super::handlers::accounts::get_accounts),
-        )
-        .route(
-            "/accounts/{account_number}",
-            get(super::handlers::accounts::get_account),
-        )
-        .route(
-            "/accounts/{account_number}/deposit",
-            post(super::handlers::accounts::deposit),
-        )
-        .route(
-            "/accounts/{account_number}/withdraw",
-            post(super::handlers::accounts::withdraw),
-        )
+        .route("/accounts", post(create_account).get(get_accounts))
+        .route("/accounts/{account_number}", get(get_account))
+        .route("/accounts/{account_number}/deposit", post(deposit))
+        .route("/accounts/{account_number}/withdraw", post(withdraw))
         .route(
             "/accounts/{account_number}/transactions",
-            get(super::handlers::accounts::get_transactions),
+            get(get_transactions),
         )
-        .route("/transfers", post(super::handlers::accounts::transfer))
+        .route("/transfers", post(transfer))
         .with_state((*handler).clone());
 
     let health_routes = Router::new()

@@ -1,12 +1,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
-use uuid::Uuid;
-
 use crate::observability::metrics::Metrics;
 use application::ports::{BalanceCacheError, BalanceCachePort};
+
+use redis::{AsyncCommands, aio::ConnectionManager};
+use uuid::Uuid;
 
 #[derive(Clone)]
 pub struct BalanceCache {

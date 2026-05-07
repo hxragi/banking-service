@@ -1,13 +1,9 @@
-use sqlx::PgPool;
-use time::OffsetDateTime;
-
 use crate::database::error::from_sqlx;
 use application::ports::{OwnerTierRepository, OwnerTierRepositoryError};
-use domain::org_id::OrgId;
-use domain::owner::Owner;
-use domain::owner_tier::OwnerTier;
-use domain::tier::Tier;
-use domain::user_id::UserId;
+use domain::{org_id::OrgId, owner::Owner, owner_tier::OwnerTier, tier::Tier, user_id::UserId};
+
+use sqlx::PgPool;
+use time::OffsetDateTime;
 
 pub struct SqlxOwnerTierRepository {
     pool: PgPool,

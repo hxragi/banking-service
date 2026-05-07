@@ -1,37 +1,39 @@
 use std::sync::Arc;
 
-use super::super::dto::requests::{
-    CreateAccountBody, DepositBody, GetAccountsQuery, GetTransactionsQuery, TransferBody,
-    WithdrawBody,
+use super::super::{
+    dto::{
+        requests::{
+            CreateAccountBody, DepositBody, GetAccountsQuery, GetTransactionsQuery, TransferBody,
+            WithdrawBody,
+        },
+        responses::{
+            AccountResponse, DepositResponse, GetAccountsResponse, GetTransactionsResponse,
+            TransactionResponse, TransferResponse, WithdrawResponse,
+        },
+    },
+    errors::HttpError,
+    mappers::domain_to_http_account,
 };
-use super::super::dto::responses::{
-    AccountResponse, DepositResponse, GetAccountsResponse, GetTransactionsResponse,
-    TransactionResponse, TransferResponse, WithdrawResponse,
-};
-use super::super::errors::HttpError;
-use super::super::mappers::domain_to_http_account;
 use crate::http::extractors::owner_extractor::OwnerExtractor;
-use application::get_account::GetAccountPort;
-use application::get_accounts::GetAccountsPort;
 use application::{
     create_account::{CreateAccountInput, CreateAccountUseCase},
     deposit::{DepositInput, DepositPort},
-    get_account::GetAccountInput,
-    get_accounts::GetAccountsInput,
+    get_account::{GetAccountInput, GetAccountPort},
+    get_accounts::{GetAccountsInput, GetAccountsPort},
     get_transactions::{GetTransactionsInput, GetTransactionsUseCase},
     transfer::{TransferInput, TransferPort},
     withdraw::{WithdrawInput, WithdrawPort},
 };
+use domain::{
+    account_number::AccountNumber, amount::Amount, owner::Owner, transaction_kind::TransactionKind,
+    user_id::UserId,
+};
+
 use axum::{
     Json,
     extract::{Path, Query, State},
     http::StatusCode,
 };
-use domain::account_number::AccountNumber;
-use domain::amount::Amount;
-use domain::owner::Owner;
-use domain::transaction_kind::TransactionKind;
-use domain::user_id::UserId;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

@@ -1,12 +1,12 @@
+use crate::http::extractors::owner_extractor::OwnerExtractionError;
+use application::ports::{OperationError, OperationErrorKind};
+
 use axum::{
     Json,
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-
-use crate::http::extractors::owner_extractor::OwnerExtractionError;
-use application::ports::{OperationError, OperationErrorKind};
 
 #[derive(Debug)]
 pub enum HttpError {

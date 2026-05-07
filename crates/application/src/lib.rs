@@ -1,6 +1,5 @@
 pub mod change_tier;
 pub mod create_account;
-pub mod database_error;
 pub mod deposit;
 pub mod external_event_processor;
 pub mod get_account;

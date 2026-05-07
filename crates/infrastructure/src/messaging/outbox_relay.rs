@@ -1,13 +1,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use sqlx::{PgPool, Row};
-use tokio::time::interval;
-use uuid::Uuid;
-
 use crate::dto::transaction_event_dto::TransactionEventDto;
 use application::ports::EventPublisher;
 use domain::transaction_event::TransactionEvent;
+
+use sqlx::{PgPool, Row};
+use tokio::time::interval;
+use uuid::Uuid;
 
 pub struct OutboxRelay {
     pool: PgPool,

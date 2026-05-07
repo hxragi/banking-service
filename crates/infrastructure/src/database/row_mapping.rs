@@ -3,6 +3,7 @@ use domain::{
     account::Account, account_number::AccountNumber, balance::Balance, org_id::OrgId, owner::Owner,
     user_id::UserId,
 };
+
 use sqlx::{Row, postgres::PgRow};
 use uuid::Uuid;
 
@@ -90,7 +91,6 @@ mod tests {
 
     #[test]
     fn row_to_account_error_is_account_repository_error() {
-        let _fn: fn(&sqlx::postgres::PgRow) -> Result<Account, AccountRepositoryError> =
-            row_to_account;
+        let _fn: fn(&PgRow) -> Result<Account, AccountRepositoryError> = row_to_account;
     }
 }

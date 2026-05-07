@@ -1,5 +1,4 @@
-use domain::account::Account;
-use domain::owner::Owner;
+use domain::{account::Account, owner::Owner};
 
 use super::dto::responses::{AccountResponse, OwnerResponse};
 

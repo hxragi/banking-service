@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use domain::{
-    account::Account, account_number::AccountNumber, amount::Amount, transaction::Transaction,
-};
-
 use crate::{
     ports::{BalanceCachePort, OperationError},
     transaction_manager::{
         TransactionManagerPort, TransactionOperation, TransferInput as TxTransferInput,
     },
+};
+use domain::{
+    account::Account, account_number::AccountNumber, amount::Amount, transaction::Transaction,
 };
 
 #[derive(Debug)]

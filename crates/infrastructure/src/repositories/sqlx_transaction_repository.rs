@@ -1,10 +1,12 @@
+use std::str::FromStr;
+
 use application::ports::{
     PaginatedTransactions, TransactionRepository, TransactionRepositoryError,
     TransactionWithAccounts,
 };
 use domain::{amount::Amount, transaction::Transaction, transaction_kind::TransactionKind};
+
 use sqlx::PgPool;
-use std::str::FromStr;
 use time::OffsetDateTime;
 use uuid::Uuid;
 

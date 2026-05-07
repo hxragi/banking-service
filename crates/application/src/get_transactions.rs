@@ -1,8 +1,9 @@
+use std::sync::Arc;
+
 use crate::ports::{
     AccountRepository, OperationError, PaginatedTransactions, TransactionRepository,
 };
 use domain::account_number::AccountNumber;
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct GetTransactionsInput {

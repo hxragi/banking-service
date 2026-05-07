@@ -1,10 +1,11 @@
+use std::sync::Arc;
+
 use crate::{
     deposit::{DepositInput, DepositPort},
     ports::{AccountRepository, OperationError},
     withdraw::{WithdrawInput, WithdrawPort},
 };
 use domain::{account_number::AccountNumber, amount::Amount, owner::Owner, user_id::UserId};
-use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExternalEventError {

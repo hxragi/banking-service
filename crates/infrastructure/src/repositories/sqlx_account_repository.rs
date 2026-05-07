@@ -1,6 +1,7 @@
 use crate::database::{error::from_sqlx, row_mapping::row_to_account};
 use application::ports::{AccountRepository, AccountRepositoryError};
 use domain::{account::Account, account_number::AccountNumber, owner::Owner};
+
 use sqlx::PgPool;
 
 pub struct SqlxAccountRepository {

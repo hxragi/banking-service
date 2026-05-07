@@ -1,5 +1,6 @@
-use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;
+
+use sqlx::{PgPool, postgres::PgPoolOptions};
 
 pub async fn create_with_config(
     database_url: &str,

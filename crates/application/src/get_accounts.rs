@@ -1,6 +1,7 @@
+use std::sync::Arc;
+
 use crate::ports::{AccountRepository, BalanceCachePort, OperationError};
 use domain::{account::Account, owner::Owner};
-use std::sync::Arc;
 
 pub struct GetAccountsInput {
     pub owner: Owner,
