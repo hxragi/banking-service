@@ -1,8 +1,10 @@
+use std::{sync::Arc, time::Duration};
+
 use application::transaction_manager::{
     RetryConfig, TransactionError, TransactionManagerPort, TransactionOperation, TransactionOutput,
 };
+
 use rand::random;
-use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 
 pub struct RetryingTransactionManager<T> {

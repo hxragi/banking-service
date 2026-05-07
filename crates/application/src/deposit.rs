@@ -44,6 +44,7 @@ impl DepositPort for DepositUseCase {
     )]
     async fn execute(&self, input: DepositInput) -> Result<Account, OperationError> {
         let account_number_str = input.account_number.to_string();
+
         let DepositInput {
             account_number,
             amount,

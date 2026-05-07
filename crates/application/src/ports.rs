@@ -2,6 +2,7 @@ use domain::{
     account::Account, account_number::AccountNumber, owner::Owner, owner_tier::OwnerTier,
     tier::Tier, transaction_event::TransactionEvent,
 };
+
 use serde::Serialize;
 use thiserror::Error;
 use uuid::Uuid;

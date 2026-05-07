@@ -18,6 +18,6 @@ pub fn init_sentry(config: &Option<SentryConfig>) -> Option<sentry::ClientInitGu
     };
 
     let guard = sentry::init(options);
-    tracing::info!("Sentry initialized with error/critical level filtering");
+    tracing::info!("sentry initialized with error/critical level filtering");
     Some(guard)
 }

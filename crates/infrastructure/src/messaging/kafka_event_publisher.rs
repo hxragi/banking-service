@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use crate::messaging::kafka_tracing::create_traceparent_for_kafka;
+use crate::settings::settings::KafkaConfig;
+
 use rdkafka::{
     ClientConfig,
     producer::{FutureProducer, FutureRecord, Producer},
 };
 use thiserror::Error;
-
-use crate::messaging::kafka_tracing::create_traceparent_for_kafka;
-use crate::settings::settings::KafkaConfig;
 
 #[derive(Debug, Clone)]
 pub struct DomainEvent {

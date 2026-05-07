@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{interceptor::InternalRequestExt, mappers::domain_to_proto_account};
 use crate::{
     grpc::bank_service::bank::{
@@ -23,7 +25,7 @@ use domain::{
     account_number::AccountNumber, amount::Amount, owner::Owner, tier::Tier,
     transaction_kind::TransactionKind,
 };
-use std::sync::Arc;
+
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 

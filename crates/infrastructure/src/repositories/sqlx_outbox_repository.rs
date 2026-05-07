@@ -1,12 +1,12 @@
+use crate::{
+    database::error::from_sqlx, database::transaction::DbTransaction,
+    dto::transaction_event_dto::TransactionEventDto,
+};
+use application::{ports::TransactionRepositoryError, transaction_manager::OutboxRepository};
+use domain::transaction_event::TransactionEvent;
+
 use async_trait::async_trait;
 use uuid::Uuid;
-
-use crate::database::error::from_sqlx;
-use crate::database::transaction::DbTransaction;
-use crate::dto::transaction_event_dto::TransactionEventDto;
-use application::ports::TransactionRepositoryError;
-use application::transaction_manager::OutboxRepository;
-use domain::transaction_event::TransactionEvent;
 
 #[derive(Clone, Default)]
 pub struct SqlxOutboxRepository;

@@ -1,7 +1,7 @@
-use time::OffsetDateTime;
-
 use crate::owner::Owner;
 use crate::tier::Tier;
+
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerTier {

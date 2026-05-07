@@ -1,7 +1,7 @@
+use crate::{amount::Amount, errors::DomainError, transaction_kind::TransactionKind};
+
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::{amount::Amount, errors::DomainError, transaction_kind::TransactionKind};
 
 #[derive(Debug, Clone)]
 pub struct Transaction {

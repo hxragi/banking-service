@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use crate::{
     ports::{BalanceCachePort, OperationError},
     transaction_manager::{
@@ -5,7 +7,6 @@ use crate::{
     },
 };
 use domain::{account::Account, account_number::AccountNumber, amount::Amount};
-use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct WithdrawInput {

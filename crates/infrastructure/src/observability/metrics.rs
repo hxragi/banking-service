@@ -1,9 +1,9 @@
-use axum::body::Body;
-use axum::http::StatusCode;
-use axum::response::Response;
-use axum::{Router, routing::get};
-use prometheus::{Encoder as _, IntCounterVec, Opts, Registry};
 use std::sync::Arc;
+
+use application::ports::MetricsPort;
+
+use axum::{Router, body::Body, http::StatusCode, response::Response, routing::get};
+use prometheus::{Encoder, IntCounterVec, Opts, Registry};
 
 #[derive(Clone)]
 pub struct Metrics {
@@ -21,26 +21,26 @@ impl Metrics {
         let operations_total = IntCounterVec::new(
             Opts::new(
                 "operations_total",
-                "Total number of operations by type and status",
+                "total number of operations by type and status",
             ),
             &["operation", "status"],
         )?;
         registry.register(Box::new(operations_total.clone()))?;
 
         let errors_total = IntCounterVec::new(
-            Opts::new("errors_total", "Total number of errors by type"),
+            Opts::new("errors_total", "total number of errors by type"),
             &["error_type", "operation"],
         )?;
         registry.register(Box::new(errors_total.clone()))?;
 
         let cache_hits = IntCounterVec::new(
-            Opts::new("cache_hits_total", "Total cache hits by type"),
+            Opts::new("cache_hits_total", "total cache hits by type"),
             &["cache_type"],
         )?;
         registry.register(Box::new(cache_hits.clone()))?;
 
         let cache_misses = IntCounterVec::new(
-            Opts::new("cache_misses_total", "Total cache misses by type"),
+            Opts::new("cache_misses_total", "total cache misses by type"),
             &["cache_type"],
         )?;
         registry.register(Box::new(cache_misses.clone()))?;
@@ -101,8 +101,6 @@ pub fn create_metrics_router(registry: Registry) -> Router {
         }),
     )
 }
-
-use application::ports::MetricsPort;
 
 impl MetricsPort for Metrics {
     fn increment_operation(&self, operation: &str, status: &str) {

@@ -1,7 +1,6 @@
+use crate::database::{error::from_sqlx, transaction::DbTransaction};
 use application::ports::{TransactionRepositoryError, TransactionWriteRepository};
 use domain::transaction::Transaction;
-
-use crate::database::{error::from_sqlx, transaction::DbTransaction};
 
 pub struct SqlxTransactionWriteRepository;
 

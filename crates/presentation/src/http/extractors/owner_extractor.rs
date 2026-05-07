@@ -1,6 +1,4 @@
-use domain::org_id::OrgId;
-use domain::owner::Owner;
-use domain::user_id::UserId;
+use domain::{org_id::OrgId, owner::Owner, user_id::UserId};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum OwnerExtractionError {

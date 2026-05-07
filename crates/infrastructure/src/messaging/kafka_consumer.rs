@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
 use crate::messaging::{
     kafka_external_events::{DonateTopupEvent, GovFineCreatedEvent, MarketOrderPaidEvent},
     kafka_tracing::extract_trace_context,
@@ -6,6 +8,7 @@ use application::external_event_processor::{
     ExternalEventError, ExternalEventProcessor, ProcessDonateTopupInput, ProcessGovFineInput,
     ProcessMarketOrderInput,
 };
+
 use async_trait::async_trait;
 use base64::Engine;
 use opentelemetry::trace::TraceContextExt;
@@ -16,7 +19,6 @@ use rdkafka::{
     producer::{FutureProducer, Producer},
 };
 use redis::aio::MultiplexedConnection;
-use std::{collections::HashMap, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 use tracing::Instrument;
@@ -176,7 +178,7 @@ impl DlqProducer {
             .set("bootstrap.servers", bootstrap_servers)
             .set("message.timeout.ms", "5000")
             .create()
-            .map_err(|e| anyhow::anyhow!("Failed to create DLQ producer: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to create DLQ producer: {}", e))?;
 
         Ok(Self { producer })
     }
@@ -230,7 +232,7 @@ impl DlqProducer {
                     offset = offset,
                     retry_count = retry_count,
                     dlq_topic = DLQ_TOPIC,
-                    "ALERT: Message sent to DLQ after {} failed processing attempts",
+                    "message sent to DLQ after {} failed processing attempts",
                     retry_count
                 );
             }
@@ -240,7 +242,7 @@ impl DlqProducer {
                     original_topic = %original_topic,
                     partition = partition,
                     offset = offset,
-                    "Failed to send message to DLQ - message will be redelivered"
+                    "failed to send message to DLQ - message will be redelivered"
                 );
             }
         }
@@ -386,12 +388,12 @@ impl KafkaEventConsumer {
             .set("auto.offset.reset", &config.auto_offset_reset)
             .set("enable.auto.commit", "false")
             .create()
-            .map_err(|e| anyhow::anyhow!("Failed to create Kafka consumer: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to create Kafka consumer: {}", e))?;
 
         let topics: Vec<&str> = config.topics.iter().map(|s| s.as_str()).collect();
         consumer
             .subscribe(&topics)
-            .map_err(|e| anyhow::anyhow!("Failed to subscribe to topics: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("failed to subscribe to topics: {}", e))?;
 
         Ok(Self {
             consumer,
@@ -404,7 +406,7 @@ impl KafkaEventConsumer {
 
     pub async fn run(mut self) {
         tracing::info!(
-            "Kafka consumer started with DLQ support (max_retries={})",
+            "kafka consumer started with DLQ support (max_retries={})",
             MAX_RETRIES
         );
 
@@ -418,7 +420,7 @@ impl KafkaEventConsumer {
             tokio::select! {
                 command = command_rx.recv() => {
                     if let Some(ConsumerCommand::Shutdown) = command {
-                        tracing::info!("Received shutdown command, stopping consumer");
+                        tracing::info!("received shutdown command, stopping consumer");
                         break;
                     }
                 }
@@ -683,7 +685,7 @@ pub async fn start_consumer_with_retry(
 
     match check_kafka_connectivity(&config.bootstrap_servers, 10).await {
         Ok(()) => {
-            tracing::info!("Kafka broker is available, starting consumer immediately");
+            tracing::info!("kafka broker is available, starting consumer immediately");
             let consumer = KafkaEventConsumer::new(
                 &config,
                 handler,

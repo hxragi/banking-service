@@ -1,8 +1,9 @@
-use sqlx::PgPool;
 use std::sync::Arc;
 
 use crate::database::transaction::DbTransaction;
 use application::ports::{TransactionError, TransactionPort};
+
+use sqlx::PgPool;
 
 #[derive(Clone)]
 pub struct Manager {

@@ -50,10 +50,7 @@ impl ChangeTierUseCase {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
     use std::sync::Mutex;
-    use time::OffsetDateTime;
-    use uuid::Uuid;
 
     use crate::{
         create_account::{CreateAccountInput, CreateAccountUseCase},
@@ -66,6 +63,10 @@ mod tests {
         account::Account, account_number::AccountNumber, balance::Balance, owner_tier::OwnerTier,
         tier::Tier, user_id::UserId,
     };
+
+    use async_trait::async_trait;
+    use time::OffsetDateTime;
+    use uuid::Uuid;
 
     struct FakeAccountRepository {
         count_result: Result<u64, AccountRepositoryError>,
@@ -493,7 +494,7 @@ mod tests {
         }
 
         let state = Arc::new(SharedState {
-            accounts: Mutex::new(vec![]),
+            accounts: Mutex::new(Vec::new()),
             tier: Mutex::new(Tier::Basic),
         });
 

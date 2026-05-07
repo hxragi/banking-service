@@ -1,8 +1,8 @@
 use std::ops::DerefMut;
 
-use sqlx::{PgConnection, Postgres, Transaction as SqlxTransaction};
+use application::ports::{Transaction, TransactionError};
 
-use application::ports::{Transaction as TransactionTrait, TransactionError};
+use sqlx::{PgConnection, Postgres, Transaction as SqlxTransaction};
 
 #[derive(Debug)]
 pub struct DbTransaction {
@@ -22,7 +22,7 @@ impl DbTransaction {
     }
 }
 
-impl TransactionTrait for DbTransaction {
+impl Transaction for DbTransaction {
     async fn commit(mut self) -> Result<(), TransactionError> {
         if let Some(tx) = self.inner.take() {
             tx.commit()
@@ -45,7 +45,7 @@ impl TransactionTrait for DbTransaction {
 impl Drop for DbTransaction {
     fn drop(&mut self) {
         if self.inner.is_some() {
-            tracing::warn!("DbTransaction dropper without explicit commit/rollback")
+            tracing::warn!("DbTransaction dropped without explicit commit/rollback")
         }
     }
 }

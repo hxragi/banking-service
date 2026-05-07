@@ -1,10 +1,10 @@
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::str::FromStr;
+
+use domain::{transaction_event::TransactionEvent, transaction_kind::TransactionKind};
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use domain::transaction_event::TransactionEvent;
-use domain::transaction_kind::TransactionKind;
 
 fn serialize_operation_type<S>(kind: &TransactionKind, serializer: S) -> Result<S::Ok, S::Error>
 where

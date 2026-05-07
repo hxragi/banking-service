@@ -1,8 +1,8 @@
-use sqlx::PgPool;
-use time::OffsetDateTime;
-
 use crate::database::{error::from_sqlx, transaction::DbTransaction};
 use application::ports::{IdempotencyError, IdempotencyTxRepository};
+
+use sqlx::PgPool;
+use time::OffsetDateTime;
 
 pub struct SqlxIdempotencyRepository {
     pool: PgPool,

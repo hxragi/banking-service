@@ -5,7 +5,7 @@ pub async fn shutdown_signal() {
         match signal::ctrl_c().await {
             Ok(()) => {}
             Err(e) => {
-                tracing::error!("Failed to install Ctrl+C handler: {}", e);
+                tracing::error!("failed to install Ctrl+C handler: {}", e);
             }
         }
     };
@@ -17,14 +17,11 @@ pub async fn shutdown_signal() {
                 stream.recv().await;
             }
             Err(e) => {
-                tracing::error!("Failed to install terminate signal handler: {}", e);
+                tracing::error!("failed to install terminate signal handler: {}", e);
                 std::future::pending().await
             }
         }
     };
-
-    #[cfg(not(unix))]
-    let terminate = async { std::future::pending().await };
 
     tokio::select! {
         _ = ctrl_c => {},

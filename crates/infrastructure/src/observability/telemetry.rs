@@ -1,12 +1,11 @@
 use std::time::Duration;
 
+use crate::settings::settings::AppConfig;
+
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::trace::SdkTracerProvider;
+use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use opentelemetry_semantic_conventions::resource::{SERVICE_NAME, SERVICE_VERSION};
-
-use crate::settings::settings::AppConfig;
 
 pub fn init_telemetry(service_name: &str, config: &AppConfig) -> anyhow::Result<SdkTracerProvider> {
     let endpoint = config.telemetry.otel_endpoint.clone();

@@ -1,7 +1,7 @@
+use crate::{account_number::AccountNumber, balance::Balance, owner::Owner};
+
 use time::OffsetDateTime;
 use uuid::Uuid;
-
-use crate::{account_number::AccountNumber, balance::Balance, owner::Owner};
 
 #[derive(Debug, Clone)]
 pub struct Account {
